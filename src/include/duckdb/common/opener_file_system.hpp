@@ -123,6 +123,12 @@ public:
 		return GetFileSystem().Glob(path, GetOpener().get());
 	}
 
+	vector<OpenFileInfo> GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener = nullptr) override {
+		VerifyNoOpener(opener);
+		VerifyCanAccessFile(path);
+		return GetFileSystem().GlobWithFilter(path, filter_context, GetOpener().get());
+	}
+
 	std::string GetName() const override {
 		return "OpenerFileSystem - " + GetFileSystem().GetName();
 	}

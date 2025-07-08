@@ -10,6 +10,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
+#include "duckdb/common/hive_partitioning.hpp"
+#include "duckdb/common/multi_file/multi_file_reader.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -1310,9 +1312,57 @@ static bool IsSymbolicLink(const string &path) {
 #endif
 }
 
+// Forward declarations for the internal functions
+static void RecursiveGlobDirectoriesInternal(FileSystem &fs, const string &path, vector<OpenFileInfo> &result,
+                                             bool match_directory, bool join_path, 
+                                             optional_ptr<const FileSystem::GlobFilterContext> filter_context);
+static void GlobFilesInternalWithFiltering(FileSystem &fs, const string &path, const string &glob, bool match_directory,
+                                          vector<OpenFileInfo> &result, bool join_path, 
+                                          optional_ptr<const FileSystem::GlobFilterContext> filter_context);
+
 static void RecursiveGlobDirectories(FileSystem &fs, const string &path, vector<OpenFileInfo> &result,
                                      bool match_directory, bool join_path) {
+	RecursiveGlobDirectoriesInternal(fs, path, result, match_directory, join_path, nullptr);
+}
 
+// Helper function to apply filters to a single file
+static bool ApplyFiltersToFile(const string &file_path, const FileSystem::GlobFilterContext &filter_context) {
+	if (!filter_context.HasFilters()) {
+		return true; // No filters, accept all files
+	}
+	
+	// Create a temporary vector with just this file to use the existing filtering logic
+	vector<OpenFileInfo> temp_files = {OpenFileInfo(file_path)};
+	
+	// Apply the filter pushdown logic
+	auto filters_copy = vector<unique_ptr<Expression>>();
+	for (auto &filter : *filter_context.filters) {
+		filters_copy.push_back(filter->Copy());
+	}
+	
+	auto &context_ref = const_cast<ClientContext&>(*filter_context.context);
+	auto &pushdown_info_ref = const_cast<MultiFilePushdownInfo&>(*filter_context.pushdown_info);
+	
+	// Use the existing filter logic - create filter info
+	HivePartitioningFilterInfo filter_info;
+	for (idx_t i = 0; i < pushdown_info_ref.column_ids.size(); i++) {
+		if (IsVirtualColumn(pushdown_info_ref.column_ids[i])) {
+			continue;
+		}
+		filter_info.column_map.insert({pushdown_info_ref.column_names[pushdown_info_ref.column_ids[i]], i});
+	}
+	filter_info.hive_enabled = filter_context.options->hive_partitioning;
+	filter_info.filename_enabled = filter_context.options->filename;
+
+	auto start_files = temp_files.size();
+	HivePartitioning::ApplyFiltersToFileList(context_ref, temp_files, filters_copy, filter_info, pushdown_info_ref);
+	
+	return temp_files.size() > 0; // Return true if the file passed the filters
+}
+
+static void RecursiveGlobDirectoriesInternal(FileSystem &fs, const string &path, vector<OpenFileInfo> &result,
+                                             bool match_directory, bool join_path, 
+                                             optional_ptr<const FileSystem::GlobFilterContext> filter_context) {
 	fs.ListFiles(path, [&](OpenFileInfo &info) {
 		if (join_path) {
 			info.path = fs.JoinPath(path, info.path);
@@ -1324,17 +1374,29 @@ static void RecursiveGlobDirectories(FileSystem &fs, const string &path, vector<
 		bool return_file = is_directory == match_directory;
 		if (is_directory) {
 			if (return_file) {
-				result.push_back(info);
+				// Apply filters to directory paths if needed and filter context exists
+				if (!filter_context || !match_directory || ApplyFiltersToFile(info.path, *filter_context)) {
+					result.push_back(info);
+				}
 			}
-			RecursiveGlobDirectories(fs, info.path, result, match_directory, true);
+			RecursiveGlobDirectoriesInternal(fs, info.path, result, match_directory, true, filter_context);
 		} else if (return_file) {
-			result.push_back(std::move(info));
+			// Apply filters to file paths if filter context exists
+			if (!filter_context || ApplyFiltersToFile(info.path, *filter_context)) {
+				result.push_back(std::move(info));
+			}
 		}
 	});
 }
 
 static void GlobFilesInternal(FileSystem &fs, const string &path, const string &glob, bool match_directory,
                               vector<OpenFileInfo> &result, bool join_path) {
+	GlobFilesInternalWithFiltering(fs, path, glob, match_directory, result, join_path, nullptr);
+}
+
+static void GlobFilesInternalWithFiltering(FileSystem &fs, const string &path, const string &glob, bool match_directory,
+                                          vector<OpenFileInfo> &result, bool join_path, 
+                                          optional_ptr<const FileSystem::GlobFilterContext> filter_context) {
 	fs.ListFiles(path, [&](OpenFileInfo &info) {
 		bool is_directory = FileSystem::IsDirectory(info);
 		if (is_directory != match_directory) {
@@ -1344,14 +1406,17 @@ static void GlobFilesInternal(FileSystem &fs, const string &path, const string &
 			if (join_path) {
 				info.path = fs.JoinPath(path, info.path);
 			}
-			result.push_back(std::move(info));
+			// Apply filters before adding to result if filter context exists
+			if (!filter_context || ApplyFiltersToFile(info.path, *filter_context)) {
+				result.push_back(std::move(info));
+			}
 		}
 	});
 }
 
-vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, FileOpener *opener, bool absolute_path) {
+static vector<OpenFileInfo> FetchFileWithoutGlob(LocalFileSystem &fs, const string &path, FileOpener *opener, bool absolute_path) {
 	vector<OpenFileInfo> result;
-	if (FileExists(path, opener) || IsPipe(path, opener)) {
+	if (fs.FileExists(path, opener) || fs.IsPipe(path, opener)) {
 		result.emplace_back(path);
 	} else if (!absolute_path) {
 		Value value;
@@ -1359,8 +1424,8 @@ vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, F
 			auto search_paths_str = value.ToString();
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				auto joined_path = JoinPath(search_path, path);
-				if (FileExists(joined_path, opener) || IsPipe(joined_path, opener)) {
+				auto joined_path = fs.JoinPath(search_path, path);
+				if (fs.FileExists(joined_path, opener) || fs.IsPipe(joined_path, opener)) {
 					result.emplace_back(joined_path);
 				}
 			}
@@ -1410,10 +1475,13 @@ const char *LocalFileSystem::NormalizeLocalPath(const string &path) {
 	return path.c_str() + GetFileUrlOffset(path);
 }
 
-vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opener) {
+// Internal implementation that can optionally apply filters
+static vector<OpenFileInfo> GlobInternal(LocalFileSystem &fs, const string &path, FileOpener *opener,
+                                         optional_ptr<const FileSystem::GlobFilterContext> filter_context) {
 	if (path.empty()) {
 		return vector<OpenFileInfo>();
 	}
+	
 	// split up the path into separate chunks
 	vector<string> splits;
 
@@ -1429,7 +1497,6 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 				continue;
 			}
 			if (splits.empty()) {
-				//				splits.push_back(path.substr(file_url_path_offset, i-file_url_path_offset));
 				splits.push_back(path.substr(0, i));
 			} else {
 				splits.push_back(path.substr(last_pos, i - last_pos));
@@ -1438,34 +1505,44 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 		}
 	}
 	splits.push_back(path.substr(last_pos, path.size() - last_pos));
+	
 	// handle absolute paths
 	bool absolute_path = false;
-	if (IsPathAbsolute(path)) {
-		// first character is a slash -  unix absolute path
+	if (fs.IsPathAbsolute(path)) {
 		absolute_path = true;
-	} else if (StringUtil::Contains(splits[0], ":")) { // TODO: this is weird? shouldn't IsPathAbsolute handle this?
-		// first split has a colon -  windows absolute path
+	} else if (StringUtil::Contains(splits[0], ":")) {
 		absolute_path = true;
 	} else if (splits[0] == "~") {
-		// starts with home directory
-		auto home_directory = GetHomeDirectory(opener);
+		auto home_directory = fs.GetHomeDirectory(opener);
 		if (!home_directory.empty()) {
 			absolute_path = true;
 			splits[0] = home_directory;
 			D_ASSERT(path[0] == '~');
-			if (!HasGlob(path)) {
-				return Glob(home_directory + path.substr(1));
+			if (!FileSystem::HasGlob(path)) {
+				// Handle recursive call for home directory case
+				return GlobInternal(fs, home_directory + path.substr(1), opener, filter_context);
 			}
 		}
 	}
+	
 	// Check if the path has a glob at all
-	if (!HasGlob(path)) {
-		// no glob: return only the file (if it exists or is a pipe)
-		return FetchFileWithoutGlob(path, opener, absolute_path);
+	if (!FileSystem::HasGlob(path)) {
+		// no glob: return only the file (if it exists or is a pipe) and apply filters if needed
+		auto result = FetchFileWithoutGlob(fs, path, opener, absolute_path);
+		if (filter_context) {
+			vector<OpenFileInfo> filtered_result;
+			for (auto &file : result) {
+				if (ApplyFiltersToFile(file.path, *filter_context)) {
+					filtered_result.push_back(std::move(file));
+				}
+			}
+			return filtered_result;
+		}
+		return result;
 	}
+	
 	vector<OpenFileInfo> previous_directories;
 	if (absolute_path) {
-		// for absolute paths, we don't start by scanning the current directory
 		previous_directories.push_back(splits[0]);
 	} else {
 		// If file_search_path is set, use those paths as the first glob elements
@@ -1492,13 +1569,12 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 		start_index = 0;
 	}
 
-	// TODO: add filter pushdown here, but how? Would need to add ClientContext, MultiFileOptions etc., unless a refactor is done
+	// Main glob loop with optional filtering
 	for (idx_t i = start_index ? 1 : 0; i < splits.size(); i++) {
 		bool is_last_chunk = i + 1 == splits.size();
-		bool has_glob = HasGlob(splits[i]);
-		// if it's the last chunk we need to find files, otherwise we find directories
-		// not the last chunk: gather a list of all directories that match the glob pattern
+		bool has_glob = FileSystem::HasGlob(splits[i]);
 		vector<OpenFileInfo> result;
+		
 		if (!has_glob) {
 			// no glob, just append as-is
 			if (previous_directories.empty()) {
@@ -1506,14 +1582,17 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 			} else {
 				if (is_last_chunk) {
 					for (auto &prev_directory : previous_directories) {
-						const string filename = JoinPath(prev_directory.path, splits[i]);
-						if (FileExists(filename, opener) || DirectoryExists(filename, opener)) {
-							result.push_back(filename);
+						const string filename = fs.JoinPath(prev_directory.path, splits[i]);
+						if (fs.FileExists(filename, opener) || fs.DirectoryExists(filename, opener)) {
+							// Apply filters if filter context exists
+							if (!filter_context || ApplyFiltersToFile(filename, *filter_context)) {
+								result.push_back(filename);
+							}
 						}
 					}
 				} else {
 					for (auto &prev_directory : previous_directories) {
-						result.push_back(JoinPath(prev_directory.path, splits[i]));
+						result.push_back(fs.JoinPath(prev_directory.path, splits[i]));
 					}
 				}
 			}
@@ -1523,43 +1602,54 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 					result = previous_directories;
 				}
 				if (previous_directories.empty()) {
-					RecursiveGlobDirectories(*this, ".", result, !is_last_chunk, false);
+					RecursiveGlobDirectoriesInternal(fs, ".", result, !is_last_chunk, false, filter_context);
 				} else {
 					for (auto &prev_dir : previous_directories) {
-						RecursiveGlobDirectories(*this, prev_dir.path, result, !is_last_chunk, true);
+						RecursiveGlobDirectoriesInternal(fs, prev_dir.path, result, !is_last_chunk, true, filter_context);
 					}
 				}
 			} else {
 				if (previous_directories.empty()) {
-					// no previous directories: list in the current path
-					GlobFilesInternal(*this, ".", splits[i], !is_last_chunk, result, false);
+					GlobFilesInternalWithFiltering(fs, ".", splits[i], !is_last_chunk, result, false, filter_context);
 				} else {
-					// previous directories
-					// we iterate over each of the previous directories, and apply the glob of the current directory
 					for (auto &prev_directory : previous_directories) {
-						GlobFilesInternal(*this, prev_directory.path, splits[i], !is_last_chunk, result, true);
+						GlobFilesInternalWithFiltering(fs, prev_directory.path, splits[i], !is_last_chunk, result, true, filter_context);
 					}
 				}
 			}
 		}
+		
 		if (result.empty()) {
 			// no result found that matches the glob
-			// last ditch effort: search the path as a string literal
-			return FetchFileWithoutGlob(path, opener, absolute_path);
+			// last ditch effort: search the path as a string literal with optional filters
+			auto fallback_result = FetchFileWithoutGlob(fs, path, opener, absolute_path);
+			if (filter_context) {
+				vector<OpenFileInfo> filtered_fallback;
+				for (auto &file : fallback_result) {
+					if (ApplyFiltersToFile(file.path, *filter_context)) {
+						filtered_fallback.push_back(std::move(file));
+					}
+				}
+				return filtered_fallback;
+			}
+			return fallback_result;
 		}
+		
 		if (is_last_chunk) {
 			return result;
 		}
 		previous_directories = std::move(result);
 	}
+	
 	return vector<OpenFileInfo>();
 }
 
+vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opener) {
+	return GlobInternal(*this, path, opener, nullptr);
+}
+
 vector<OpenFileInfo> LocalFileSystem::GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener) {
-	// For now, use the default implementation which calls Glob and then applies filters
-	// In a future implementation, this could integrate filtering directly into the glob logic
-	// by calling the filtering logic at each step of the glob expansion
-	return FileSystem::GlobWithFilter(path, filter_context, opener);
+	return GlobInternal(*this, path, opener, &filter_context);
 }
 
 unique_ptr<FileSystem> FileSystem::CreateLocal() {

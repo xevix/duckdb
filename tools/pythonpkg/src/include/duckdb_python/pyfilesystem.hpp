@@ -75,6 +75,7 @@ public:
 
 	bool FileExists(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener) override;
+	vector<OpenFileInfo> GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener) override;
 	bool CanHandleFile(const string &fpath) override;
 	bool CanSeek() override {
 		return true;

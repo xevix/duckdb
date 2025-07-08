@@ -49,6 +49,7 @@ public:
 	bool TryRemoveFile(const string &filename, optional_ptr<FileOpener> opener) override;
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
+	vector<OpenFileInfo> GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener = nullptr) override;
 
 	void RegisterSubSystem(unique_ptr<FileSystem> fs) override;
 

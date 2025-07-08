@@ -144,6 +144,12 @@ vector<OpenFileInfo> PythonFilesystem::Glob(const string &path, FileOpener *open
 	}
 	return results;
 }
+
+vector<OpenFileInfo> PythonFilesystem::GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener) {
+	// For now, use the default implementation which calls Glob and then applies filters
+	// Python filesystems could potentially implement more efficient filtering in the future
+	return FileSystem::GlobWithFilter(path, filter_context, opener);
+}
 string PythonFilesystem::PathSeparator(const string &path) {
 	return "/";
 }

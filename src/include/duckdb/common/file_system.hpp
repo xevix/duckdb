@@ -229,17 +229,18 @@ public:
 
 	//! Context for glob operations with filter pushdown
 	struct GlobFilterContext {
-		optional_ptr<const MultiFileOptions> options;
+		optional_ptr<ClientContext> context;
+		optional_ptr<MultiFileOptions> options;
 		optional_ptr<MultiFilePushdownInfo> pushdown_info;
 		optional_ptr<vector<unique_ptr<Expression>>> filters;
 		
 		GlobFilterContext() = default;
-		GlobFilterContext(const MultiFileOptions &options_p, MultiFilePushdownInfo &info_p, 
+		GlobFilterContext(ClientContext &context_p, MultiFileOptions &options_p, MultiFilePushdownInfo &info_p, 
 		                  vector<unique_ptr<Expression>> &filters_p) 
-			: options(&options_p), pushdown_info(&info_p), filters(&filters_p) {}
+			: context(&context_p), options(&options_p), pushdown_info(&info_p), filters(&filters_p) {}
 		
 		bool HasFilters() const {
-			return options && pushdown_info && filters && !filters->empty();
+			return context && options && pushdown_info && filters && !filters->empty();
 		}
 	};
 

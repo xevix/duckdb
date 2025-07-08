@@ -585,6 +585,26 @@ vector<OpenFileInfo> FileSystem::Glob(const string &path, FileOpener *opener) {
 	throw NotImplementedException("%s: Glob is not implemented!", GetName());
 }
 
+// Helper function to apply filter pushdown logic to a list of files
+static bool ApplyFilterPushdownToFileList(ClientContext &context, const MultiFileOptions &options, 
+                                         MultiFilePushdownInfo &info, vector<unique_ptr<Expression>> &filters, 
+                                         vector<OpenFileInfo> &files) {
+	HivePartitioningFilterInfo filter_info;
+	for (idx_t i = 0; i < info.column_ids.size(); i++) {
+		if (IsVirtualColumn(info.column_ids[i])) {
+			continue;
+		}
+		filter_info.column_map.insert({info.column_names[info.column_ids[i]], i});
+	}
+	filter_info.hive_enabled = options.hive_partitioning;
+	filter_info.filename_enabled = options.filename;
+
+	auto start_files = files.size();
+	HivePartitioning::ApplyFiltersToFileList(context, files, filters, filter_info, info);
+
+	return files.size() != start_files;
+}
+
 vector<OpenFileInfo> FileSystem::GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener) {
 	// Default implementation: just call regular Glob and apply filters afterward
 	auto files = Glob(path, opener);
@@ -594,10 +614,17 @@ vector<OpenFileInfo> FileSystem::GlobWithFilter(const string &path, const GlobFi
 		return files;
 	}
 	
-	// Apply filters using the existing filter logic
-	// This is a forward declaration for a helper function that would need to be added
-	// For now, return the unfiltered results
-	// TODO: Implement proper filter application here
+	// Apply the filter pushdown logic
+	auto filters_copy = vector<unique_ptr<Expression>>();
+	for (auto &filter : *filter_context.filters) {
+		filters_copy.push_back(filter->Copy());
+	}
+	
+	auto &context_ref = const_cast<ClientContext&>(*filter_context.context);
+	auto &pushdown_info_ref = const_cast<MultiFilePushdownInfo&>(*filter_context.pushdown_info);
+	ApplyFilterPushdownToFileList(context_ref, *filter_context.options, 
+	                             pushdown_info_ref, filters_copy, files);
+	
 	return files;
 }
 

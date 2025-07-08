@@ -284,8 +284,11 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
 		return nullptr;
 	}
 
-	// Create filter context for glob operations
-	FileSystem::GlobFilterContext filter_context(options, info, filters);
+	// Create filter context for glob operations  
+	// Note: We need to cast away const for the filter context since HivePartitioning::ApplyFiltersToFileList 
+	// expects non-const references, but the options aren't actually modified
+	auto &mutable_options = const_cast<MultiFileOptions&>(options);
+	FileSystem::GlobFilterContext filter_context(context, mutable_options, info, filters);
 	
 	// Use the new GlobWithFilter approach to push filters down into the glob operation
 	vector<OpenFileInfo> filtered_files;
@@ -314,8 +317,9 @@ GlobMultiFileList::DynamicFilterPushdown(ClientContext &context, const MultiFile
 	}
 	lock_guard<mutex> lck(lock);
 
-	// Expand all paths into a copy
-	// FIXME: lazy expansion and push filters into glob
+	// Use the existing PushdownInternal approach for DynamicFilterPushdown
+	// since it needs to work with TableFilterSet rather than Expression filters
+	// This could be optimized in the future to also use the new GlobWithFilter approach
 	idx_t path_index = current_path;
 	auto file_list = expanded_files;
 	while (ExpandPathInternal(path_index, file_list)) {
