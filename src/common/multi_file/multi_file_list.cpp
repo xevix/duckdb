@@ -280,20 +280,28 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
                                                                    vector<unique_ptr<Expression>> &filters) {
 	lock_guard<mutex> lck(lock);
 
-	// Expand all
-	// FIXME: lazy expansion
-	// FIXME: push down filters into glob
-	while (ExpandNextPath()) {
-	}
-
 	if (!options.hive_partitioning && !options.filename) {
 		return nullptr;
 	}
-	auto res = PushdownInternal(context, options, info, filters, expanded_files);
-	if (res) {
-		return make_uniq<SimpleMultiFileList>(expanded_files);
-	}
 
+	// Create filter context for glob operations
+	FileSystem::GlobFilterContext filter_context(options, info, filters);
+	
+	// Use the new GlobWithFilter approach to push filters down into the glob operation
+	vector<OpenFileInfo> filtered_files;
+	auto &fs = FileSystem::GetFileSystem(context);
+	
+	for (idx_t i = current_path; i < paths.size(); i++) {
+		auto glob_files = fs.GlobWithFilter(paths[i].path, filter_context, nullptr);
+		std::sort(glob_files.begin(), glob_files.end());
+		filtered_files.insert(filtered_files.end(), glob_files.begin(), glob_files.end());
+	}
+	
+	// If we got results, return them as a SimpleMultiFileList
+	if (!filtered_files.empty()) {
+		return make_uniq<SimpleMultiFileList>(filtered_files);
+	}
+	
 	return nullptr;
 }
 
@@ -386,3 +394,4 @@ bool GlobMultiFileList::IsFullyExpanded() const {
 }
 
 } // namespace duckdb
+

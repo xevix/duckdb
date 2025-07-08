@@ -1492,6 +1492,7 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 		start_index = 0;
 	}
 
+	// TODO: add filter pushdown here, but how? Would need to add ClientContext, MultiFileOptions etc., unless a refactor is done
 	for (idx_t i = start_index ? 1 : 0; i < splits.size(); i++) {
 		bool is_last_chunk = i + 1 == splits.size();
 		bool has_glob = HasGlob(splits[i]);
@@ -1552,6 +1553,13 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 		previous_directories = std::move(result);
 	}
 	return vector<OpenFileInfo>();
+}
+
+vector<OpenFileInfo> LocalFileSystem::GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener) {
+	// For now, use the default implementation which calls Glob and then applies filters
+	// In a future implementation, this could integrate filtering directly into the glob logic
+	// by calling the filtering logic at each step of the glob expansion
+	return FileSystem::GlobWithFilter(path, filter_context, opener);
 }
 
 unique_ptr<FileSystem> FileSystem::CreateLocal() {

@@ -35,6 +35,9 @@ class FileSystem;
 class Logger;
 class ClientContext;
 class QueryContext;
+class Expression;
+struct MultiFileOptions;
+struct MultiFilePushdownInfo;
 
 enum class FileType {
 	//! Regular file
@@ -224,10 +227,28 @@ public:
 	//! Returns the value of an environment variable - or the empty string if it is not set
 	DUCKDB_API static string GetEnvVariable(const string &name);
 
+	//! Context for glob operations with filter pushdown
+	struct GlobFilterContext {
+		optional_ptr<const MultiFileOptions> options;
+		optional_ptr<MultiFilePushdownInfo> pushdown_info;
+		optional_ptr<vector<unique_ptr<Expression>>> filters;
+		
+		GlobFilterContext() = default;
+		GlobFilterContext(const MultiFileOptions &options_p, MultiFilePushdownInfo &info_p, 
+		                  vector<unique_ptr<Expression>> &filters_p) 
+			: options(&options_p), pushdown_info(&info_p), filters(&filters_p) {}
+		
+		bool HasFilters() const {
+			return options && pushdown_info && filters && !filters->empty();
+		}
+	};
+
 	//! Whether there is a glob in the string
 	DUCKDB_API static bool HasGlob(const string &str);
 	//! Runs a glob on the file system, returning a list of matching files
 	DUCKDB_API virtual vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr);
+	//! Runs a glob on the file system with optional filter pushdown
+	DUCKDB_API virtual vector<OpenFileInfo> GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener = nullptr);
 	DUCKDB_API vector<OpenFileInfo> GlobFiles(const string &path, ClientContext &context,
 	                                          FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY);
 

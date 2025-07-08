@@ -14,6 +14,8 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/common/windows_util.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/multi_file/multi_file_reader.hpp"
+#include "duckdb/common/hive_partitioning.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -582,6 +584,26 @@ bool FileSystem::HasGlob(const string &str) {
 vector<OpenFileInfo> FileSystem::Glob(const string &path, FileOpener *opener) {
 	throw NotImplementedException("%s: Glob is not implemented!", GetName());
 }
+
+vector<OpenFileInfo> FileSystem::GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener) {
+	// Default implementation: just call regular Glob and apply filters afterward
+	auto files = Glob(path, opener);
+	
+	// If no filters, return as-is
+	if (!filter_context.HasFilters()) {
+		return files;
+	}
+	
+	// Apply filters using the existing filter logic
+	// This is a forward declaration for a helper function that would need to be added
+	// For now, return the unfiltered results
+	// TODO: Implement proper filter application here
+	return files;
+}
+
+// vector<OpenFileInfo> FileSystem::GlobFiltered(const string &path, FileOpener *opener, const vector<string> &filters) {
+// 	throw NotImplementedException("%s: Glob is not implemented!", GetName());
+// }
 
 void FileSystem::RegisterSubSystem(unique_ptr<FileSystem> sub_fs) {
 	throw NotImplementedException("%s: Can't register a sub system on a non-virtual file system", GetName());

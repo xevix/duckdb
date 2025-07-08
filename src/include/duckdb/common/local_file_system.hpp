@@ -65,6 +65,8 @@ public:
 
 	//! Runs a glob on the file system, returning a list of matching files
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
+	//! Runs a glob on the file system with optional filter pushdown
+	vector<OpenFileInfo> GlobWithFilter(const string &path, const GlobFilterContext &filter_context, FileOpener *opener = nullptr) override;
 
 	bool CanHandleFile(const string &fpath) override {
 		//! Whether or not a sub-system can handle a specific file path
