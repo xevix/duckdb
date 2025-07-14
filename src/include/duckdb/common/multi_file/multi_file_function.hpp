@@ -99,6 +99,17 @@ public:
 		bool bound_on_first_file = true;
 		if (result->multi_file_reader->Bind(result->file_options, *result->file_list, result->types, result->names,
 		                                    result->reader_bind)) {
+			// TODO: find earliest place to do this check
+			if (result->file_options.union_by_name) {
+				// union_by_name requires reading all files eagerly
+				result->file_options.hive_lazy_listing = false;
+			}
+			// HiveClientContextState()
+			// Clear earlier files used for peeking at hive partitioning, eagerly read them all
+			// if (!result->file_options.hive_lazy_listing) {
+			// 	result->file_list->Clear();
+			// 	result->file_list->GetAllFiles();
+			// }
 			result->multi_file_reader->BindOptions(result->file_options, *result->file_list, result->types,
 			                                       result->names, result->reader_bind);
 			bound_on_first_file = false;
@@ -721,7 +732,15 @@ public:
 		auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
 
 		vector<Value> file_path;
-		for (const auto &file : bind_data.file_list->Files()) {
+		unique_ptr<MultiFileList> mlist;
+		MultiFileList *list;
+		if (bind_data.file_options.hive_lazy_listing) {
+			mlist = bind_data.file_list->GetFirstFileList();
+			list = mlist.get();
+		} else {
+			list = bind_data.file_list.get();
+		}
+		for (const auto &file : list->Files()) {
 			file_path.emplace_back(file.path);
 		}
 

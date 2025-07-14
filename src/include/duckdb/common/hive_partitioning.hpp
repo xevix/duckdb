@@ -30,15 +30,29 @@ struct HivePartitioningFilterInfo {
 
 class HivePartitioning {
 public:
+	// Constructor
+	HivePartitioning(ClientContext &context, vector<unique_ptr<Expression>> &filters, const MultiFileOptions &options,
+	                 MultiFilePushdownInfo &info)
+	    : context(context), filters(filters), info(info), have_preserved_filter(filters.size(), false),
+	      consumed(false) {
+		filter_info = GetFilterInfo(info, options);
+	}
+
 	//! Parse a filename that follows the hive partitioning scheme
 	DUCKDB_API static std::map<string, string> Parse(const string &filename);
+
+	//! Prunes a file based on a set of filters
+	DUCKDB_API bool ApplyFiltersToFile(OpenFileInfo &file, bool is_deepest_directory);
+
 	//! Prunes a list of filenames based on a set of filters, can be used by TableFunctions in the
 	//! pushdown_complex_filter function to skip files with filename-based filters. Also removes the filters that always
 	//! evaluate to true.
 	DUCKDB_API static void ApplyFiltersToFileList(ClientContext &context, vector<OpenFileInfo> &files,
 	                                              vector<unique_ptr<Expression>> &filters,
-	                                              const HivePartitioningFilterInfo &filter_info,
-	                                              MultiFilePushdownInfo &info);
+	                                              const MultiFileOptions &options, MultiFilePushdownInfo &info);
+	//! Finalize the hive filtering
+	DUCKDB_API void Finalize(idx_t filtered_files, idx_t total_files);
+	DUCKDB_API void Finalize();
 
 	DUCKDB_API static Value GetValue(ClientContext &context, const string &key, const string &value,
 	                                 const LogicalType &type);
@@ -46,6 +60,20 @@ public:
 	DUCKDB_API static string Escape(const string &input);
 	//! Unescape a hive partition key or value encoded using URL encoding
 	DUCKDB_API static string Unescape(const string &input);
+
+	DUCKDB_API static HivePartitioningFilterInfo GetFilterInfo(const MultiFilePushdownInfo &info,
+	                                                           const MultiFileOptions &options);
+
+private:
+	ClientContext &context;
+	vector<unique_ptr<Expression>> &filters;
+	MultiFilePushdownInfo &info;
+	HivePartitioningFilterInfo filter_info;
+	unordered_set<idx_t> filters_applied_to_files;
+	vector<unique_ptr<Expression>> pruned_filters;
+	vector<OpenFileInfo> pruned_files;
+	vector<bool> have_preserved_filter;
+	bool consumed;
 };
 
 struct HivePartitionKey {
@@ -115,6 +143,35 @@ protected:
 	Vector hashes_v;
 	//! Thread-local pre-allocated HivePartitionKeys
 	vector<HivePartitionKey> keys;
+};
+
+struct HiveClientContextState : public ClientContextState {
+	bool CanRequestRebind() override {
+		return true;
+	}
+
+	// Add callbacks for other query states, set hive_lazy_listing as needed
+	void QueryBegin(ClientContext &context) override {
+		hive_lazy_listing = true;
+	}
+
+	RebindQueryInfo OnPlanningError(ClientContext &context, SQLStatement &statement, ErrorData &error) override {
+		// If the error was caused by lazy listing, we attempt a rebind with hive lazy listing false
+		if (hive_lazy_listing && error.Type() == ExceptionType::OPTIMIZER) {
+			auto &info = error.ExtraInfo();
+			auto hive_error_it = info.find("hive_error");
+			if (hive_error_it != info.end()) {
+				auto hive_error = hive_error_it->second;
+				if (hive_error == "lazy") {
+					hive_lazy_listing = false;
+					return RebindQueryInfo::ATTEMPT_TO_REBIND;
+				}
+			}
+		}
+		return RebindQueryInfo::DO_NOT_REBIND;
+	}
+
+	bool hive_lazy_listing = true;
 };
 
 } // namespace duckdb
