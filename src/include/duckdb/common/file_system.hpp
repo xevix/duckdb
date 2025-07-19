@@ -171,9 +171,9 @@ public:
 	//! List files in a directory, invoking the callback method for each one with (filename, is_dir)
 	DUCKDB_API virtual bool ListFiles(const string &directory,
 	                                  const std::function<void(const string &, bool)> &callback,
-	                                  FileOpener *opener = nullptr);
+	                                  FileOpener *opener = nullptr, const bool &stop = false);
 	DUCKDB_API bool ListFiles(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-	                          optional_ptr<FileOpener> opener = nullptr);
+	                          optional_ptr<FileOpener> opener = nullptr, const bool &stop = false);
 
 	//! Move a file from source path to the target, StorageManager relies on this being an atomic action for ACID
 	//! properties
@@ -228,8 +228,9 @@ public:
 	DUCKDB_API static bool HasGlob(const string &str);
 	//! Runs a glob on the file system, returning a list of matching files
 	DUCKDB_API virtual vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr);
+	DUCKDB_API virtual vector<OpenFileInfo> GlobFiltered(const string &path, FileOpener *opener, idx_t max_files);
 	DUCKDB_API vector<OpenFileInfo> GlobFiles(const string &path, ClientContext &context,
-	                                          FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY);
+	                                          FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY, idx_t max_files = 0);
 
 	//! registers a sub-file system to handle certain file name prefixes, e.g. http:// etc.
 	DUCKDB_API virtual void RegisterSubSystem(unique_ptr<FileSystem> sub_fs);
@@ -285,7 +286,7 @@ protected:
 
 	DUCKDB_API virtual bool ListFilesExtended(const string &directory,
 	                                          const std::function<void(OpenFileInfo &info)> &callback,
-	                                          optional_ptr<FileOpener> opener);
+	                                          optional_ptr<FileOpener> opener, const bool &stop = false);
 	DUCKDB_API virtual bool SupportsListFilesExtended() const;
 
 public:

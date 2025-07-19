@@ -123,6 +123,12 @@ public:
 		return GetFileSystem().Glob(path, GetOpener().get());
 	}
 
+	vector<OpenFileInfo> GlobFiltered(const string &path, FileOpener *opener, idx_t max_files) override {
+		VerifyNoOpener(opener);
+		VerifyCanAccessFile(path);
+		return GetFileSystem().GlobFiltered(path, GetOpener().get(), max_files);
+	}
+
 	std::string GetName() const override {
 		return "OpenerFileSystem - " + GetFileSystem().GetName();
 	}
@@ -160,10 +166,10 @@ protected:
 	}
 
 	bool ListFilesExtended(const string &directory, const std::function<void(OpenFileInfo &info)> &callback,
-	                       optional_ptr<FileOpener> opener) override {
+	                       optional_ptr<FileOpener> opener, const bool &stop) override {
 		VerifyNoOpener(opener);
 		VerifyCanAccessDirectory(directory);
-		return GetFileSystem().ListFiles(directory, callback, GetOpener().get());
+		return GetFileSystem().ListFiles(directory, callback, GetOpener().get(), stop);
 	}
 
 	bool SupportsListFilesExtended() const override {

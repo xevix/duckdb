@@ -179,11 +179,13 @@ protected:
 	//! Get the i-th expanded file
 	OpenFileInfo GetFileInternal(idx_t i);
 	//! Grabs the next path and expands it into Expanded paths: returns false if no more files to expand
-	bool ExpandNextPath();
+	bool ExpandNextPath(idx_t max_files = 0);
 	//! Grabs the next path and expands it into Expanded paths: returns false if no more files to expand
-	bool ExpandPathInternal(idx_t &current_path, vector<OpenFileInfo> &result) const;
+	bool ExpandPathInternal(idx_t &current_path, vector<OpenFileInfo> &result, idx_t max_files = 0) const;
 	//! Whether all files have been expanded
 	bool IsFullyExpanded() const;
+	//! Clear the cache of expanded files
+	void Clear();
 
 	//! The ClientContext for globbing
 	ClientContext &context;
