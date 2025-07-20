@@ -702,7 +702,9 @@ bool LocalFileSystem::ListFilesExtended(const string &directory,
 	duckdb::unique_ptr<DIR, std::function<void(DIR *)>> dir_unique_ptr(dir, [](DIR *d) { closedir(d); });
 
 	struct dirent *ent;
+	int i = 0;
 	// loop over all files in the directory
+	std::cout << "dir: " << normalized_dir << std::endl;
 	while ((ent = readdir(dir)) != nullptr) {
 		OpenFileInfo info(ent->d_name);
 		auto &name = info.path;
@@ -710,6 +712,9 @@ bool LocalFileSystem::ListFilesExtended(const string &directory,
 		if (name.empty() || name == "." || name == "..") {
 			continue;
 		}
+		std::cout << "readdir " << i << std::endl;
+		i++;
+		std::cout << "name: " << name << std::endl;
 		// now stat the file to figure out if it is a regular file or directory
 		string full_path = JoinPath(normalized_dir, name);
 		struct stat status;
@@ -1314,16 +1319,18 @@ static bool IsSymbolicLink(const string &path) {
 }
 
 static void RecursiveGlobDirectories(FileSystem &fs, const string &path, vector<OpenFileInfo> &result,
-                                     bool match_directory, bool join_path, idx_t max_files, idx_t &files_added) {
+                                     bool match_directory, bool join_path, idx_t max_files, idx_t &files_added, idx_t files_seen = 0) {
+	bool stop = false;
 	fs.ListFiles(path, [&](OpenFileInfo &info) {
-		if (files_added >= max_files) {
-			return false;
+		if (files_added >= max_files || files_seen >= max_files) {
+			stop = true;
+			return;
 		}
 		if (join_path) {
 			info.path = fs.JoinPath(path, info.path);
 		}
 		if (IsSymbolicLink(info.path)) {
-			return true;
+			return;
 		}
 		bool is_directory = FileSystem::IsDirectory(info);
 		bool return_file = is_directory == match_directory;
@@ -1336,19 +1343,20 @@ static void RecursiveGlobDirectories(FileSystem &fs, const string &path, vector<
 			result.push_back(std::move(info));
 			files_added++;
 		}
-		return true;
-	});
+	}, nullptr, stop);
 }
 
 static void GlobFilesInternal(FileSystem &fs, const string &path, const string &glob, bool match_directory,
                               vector<OpenFileInfo> &result, bool join_path, idx_t max_files, idx_t &files_added) {
+	bool stop = false;
 	fs.ListFiles(path, [&](OpenFileInfo &info) {
 		if (files_added >= max_files) {
-			return false;
+			stop = true;
+			return;
 		}
 		bool is_directory = FileSystem::IsDirectory(info);
 		if (is_directory != match_directory) {
-			return true;
+			return;
 		}
 		if (Glob(info.path.c_str(), info.path.size(), glob.c_str(), glob.size())) {
 			if (join_path) {
@@ -1357,8 +1365,7 @@ static void GlobFilesInternal(FileSystem &fs, const string &path, const string &
 			result.push_back(std::move(info));
 			files_added++;
 		}
-		return true;
-	});
+	}, nullptr, stop);
 }
 
 vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, FileOpener *opener, bool absolute_path) {
@@ -1514,7 +1521,7 @@ vector<OpenFileInfo> LocalFileSystem::GlobFiltered(const string &path, FileOpene
 		max_files = std::numeric_limits<idx_t>::max();
 	}
 
-	for (idx_t i = start_index ? 1 : 0; i < splits.size() && files_added < max_files; i++) {
+	for (idx_t i = start_index ? 1 : 0; i < splits.size() || files_added < max_files; i++) {
 		bool is_last_chunk = i + 1 == splits.size();
 		bool has_glob = HasGlob(splits[i]);
 		// if it's the last chunk we need to find files, otherwise we find directories

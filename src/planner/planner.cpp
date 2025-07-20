@@ -44,7 +44,6 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		binder->parameters = &bound_parameters;
 		auto bound_statement = binder->Bind(statement);
 		profiler.EndPhase();
-
 		this->names = bound_statement.names;
 		this->types = bound_statement.types;
 		this->plan = FlattenDependentJoins::DecorrelateIndependent(*binder, std::move(bound_statement.plan));

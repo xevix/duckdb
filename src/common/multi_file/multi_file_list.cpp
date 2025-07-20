@@ -8,6 +8,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/common/string_util.hpp"
+#include <chrono>
 
 #include <algorithm>
 
@@ -390,7 +391,11 @@ bool GlobMultiFileList::ExpandPathInternal(idx_t &current_path, vector<OpenFileI
 	}
 
 	auto &fs = FileSystem::GetFileSystem(context);
+	auto start = std::chrono::high_resolution_clock::now();
 	auto glob_files = fs.GlobFiles(paths[current_path].path, context, glob_options, max_files);
+	auto end = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+	std::cout << "GlobFiles in ExpandPathInternal took " << duration << "ms" << std::endl;
 	std::sort(glob_files.begin(), glob_files.end());
 	result.insert(result.end(), glob_files.begin(), glob_files.end());
 
@@ -399,7 +404,12 @@ bool GlobMultiFileList::ExpandPathInternal(idx_t &current_path, vector<OpenFileI
 }
 
 bool GlobMultiFileList::ExpandNextPath(idx_t max_files) {
-	return ExpandPathInternal(current_path, expanded_files, max_files);
+	auto start = std::chrono::high_resolution_clock::now();
+	auto res = ExpandPathInternal(current_path, expanded_files, max_files);
+	auto end = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+	std::cout << "ExpandNextPath with max_files=" << max_files << " took " << duration << "ms" "and expanded " << expanded_files.size() << " files" << std::endl;
+	return res;
 }
 
 bool GlobMultiFileList::IsFullyExpanded() const {

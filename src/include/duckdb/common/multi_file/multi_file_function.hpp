@@ -103,7 +103,11 @@ public:
 			                                       result->names, result->reader_bind);
 			bound_on_first_file = false;
 		} else {
+			auto start = std::chrono::high_resolution_clock::now();
 			result->file_options.AutoDetectHivePartitioning(*result->file_list, context);
+			auto end = std::chrono::high_resolution_clock::now();
+			auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+			std::cout << "AutoDetectHivePartitioning took " << duration << "ms" << std::endl;
 			interface.BindReader(context, result->types, result->names, *result);
 		}
 		interface.FinalizeBindData(*result);
@@ -177,6 +181,7 @@ public:
 			}
 			throw NotImplementedException("Unimplemented option %s", kv.first);
 		}
+
 		return MultiFileBindInternal(context, std::move(multi_file_reader), std::move(file_list), return_types, names,
 		                             std::move(file_options), std::move(options), std::move(interface));
 	}

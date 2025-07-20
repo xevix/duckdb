@@ -758,10 +758,18 @@ void MultiFileOptions::AutoDetectHivePartitioning(MultiFileList &files, ClientCo
 		auto_detect_hive_partitioning = false;
 	}
 	if (auto_detect_hive_partitioning) {
+		auto start = std::chrono::high_resolution_clock::now();
 		hive_partitioning = AutoDetectHivePartitioningInternal(files, context);
+		auto end = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+		std::cout << "AutoDetectHivePartitioning took " << duration << "ms" << std::endl;
 	}
 	if (hive_partitioning && hive_types_autocast) {
+		auto start = std::chrono::high_resolution_clock::now();
 		AutoDetectHiveTypesInternal(files, context);
+		auto end = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+		std::cout << "AutoDetectHiveTypes took " << duration << "ms" << std::endl;
 	}
 }
 void MultiFileOptions::VerifyHiveTypesArePartitions(const std::map<string, string> &partitions) const {

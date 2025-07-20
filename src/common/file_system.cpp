@@ -625,7 +625,11 @@ static string LookupExtensionForPattern(const string &pattern) {
 }
 
 vector<OpenFileInfo> FileSystem::GlobFiles(const string &pattern, ClientContext &context, FileGlobOptions options, idx_t max_files) {
+	auto start = std::chrono::high_resolution_clock::now();
 	auto result = GlobFiltered(pattern, nullptr, max_files);
+	auto end = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+	std::cout << "GlobFiles took " << duration << "ms" << std::endl;
 	if (result.empty()) {
 		string required_extension = LookupExtensionForPattern(pattern);
 		if (!required_extension.empty() && !context.db->ExtensionIsLoaded(required_extension)) {
@@ -646,7 +650,7 @@ vector<OpenFileInfo> FileSystem::GlobFiles(const string &pattern, ClientContext 
 				throw InternalException("Extension load \"%s\" did not throw but somehow the extension was not loaded",
 				                        required_extension);
 			}
-			return GlobFiles(pattern, context, options);
+			return GlobFiles(pattern, context, options, max_files);
 		}
 		if (options == FileGlobOptions::DISALLOW_EMPTY) {
 			throw IOException("No files found that match the pattern \"%s\"", pattern);
