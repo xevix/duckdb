@@ -1853,6 +1853,10 @@ const char *LocalFileSystem::NormalizeLocalPath(const string &path) {
 }
 
 vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opener) {
+	return GlobFiltered(path, opener);
+}
+
+vector<OpenFileInfo> LocalFileSystem::GlobFiltered(const string &path, FileOpener *opener, idx_t max_files) {
 	if (path.empty()) {
 		return vector<OpenFileInfo>();
 	}
@@ -1896,7 +1900,7 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 			splits[0] = home_directory;
 			D_ASSERT(path[0] == '~');
 			if (!HasGlob(path)) {
-				return Glob(home_directory + path.substr(1));
+				return GlobFiltered(home_directory + path.substr(1), nullptr, max_files);
 			}
 		}
 	}
@@ -1934,7 +1938,10 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 		start_index = 0;
 	}
 
-	for (idx_t i = start_index ? 1 : 0; i < splits.size(); i++) {
+	bool stop = false;
+	idx_t files_added = 0;
+
+	for (idx_t i = start_index ? 1 : 0; i < splits.size() && !stop; i++) {
 		bool is_last_chunk = i + 1 == splits.size();
 		bool has_glob = HasGlob(splits[i]);
 		
@@ -1985,15 +1992,29 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 			// Collect results from final iterator
 			vector<OpenFileInfo> result;
 			while (new_iterator->HasNext()) {
-				result.push_back(new_iterator->Next());
+				auto item = new_iterator->Next();
+				result.push_back(item);
+				if (!FileSystem::IsDirectory(item)) {
+					files_added++;
+					if (files_added >= max_files && max_files != std::numeric_limits<idx_t>::max()) {
+						// Filter previous directories to only include files
+						vector<OpenFileInfo> filtered_result;
+						for (auto &file : result) {
+							if (FileExists(file.path, opener)) {
+								filtered_result.push_back(file);
+							}
+						}
+						return filtered_result;
+					}
+				}
 			}
 			return result;
 		}
-		
 		// Move to next level with single iterator
 		previous_iterators.clear();
 		previous_iterators.push_back(std::move(new_iterator));
 	}
+
 	return vector<OpenFileInfo>();
 }
 

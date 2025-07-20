@@ -137,6 +137,10 @@ vector<OpenFileInfo> VirtualFileSystem::Glob(const string &path, FileOpener *ope
 	return FindFileSystem(path).Glob(path, opener);
 }
 
+vector<OpenFileInfo> VirtualFileSystem::GlobFiltered(const string &path, FileOpener *opener, idx_t max_files) {
+	return FindFileSystem(path).GlobFiltered(path, opener, max_files);
+}
+
 void VirtualFileSystem::RegisterSubSystem(unique_ptr<FileSystem> fs) {
 	sub_systems.push_back(std::move(fs));
 }

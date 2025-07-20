@@ -123,6 +123,12 @@ public:
 		return GetFileSystem().Glob(path, GetOpener().get());
 	}
 
+	vector<OpenFileInfo> GlobFiltered(const string &path, FileOpener *opener = nullptr, idx_t max_files = std::numeric_limits<idx_t>::max()) override {
+		VerifyNoOpener(opener);
+		VerifyCanAccessFile(path);
+		return GetFileSystem().GlobFiltered(path, GetOpener().get(), max_files);
+	}
+
 	std::string GetName() const override {
 		return "OpenerFileSystem - " + GetFileSystem().GetName();
 	}

@@ -353,7 +353,29 @@ OpenFileInfo GlobMultiFileList::GetFile(idx_t i) {
 	return GetFileInternal(i);
 }
 
+void GlobMultiFileList::Clear() {
+	current_path = 0;
+	expanded_files.clear();
+}
+
 OpenFileInfo GlobMultiFileList::GetFileInternal(idx_t i) {
+	// If requesting the first few files
+	if (i <= 1) {
+		// If we already have it just return it
+		if (expanded_files.size() > i) {
+			return expanded_files[i];
+		}
+		// Otherwise just expand the first few files lazily
+		if(!ExpandNextPath(2)) {
+			return OpenFileInfo("");
+		}
+		return expanded_files[i];
+	}
+	// Beyond the first files, clear the cache if we don't have the file required and load entire file list eagerly
+	// HACK: testing
+	if (expanded_files.size() <= 2) {
+		Clear();
+	}
 	while (expanded_files.size() <= i) {
 		if (!ExpandNextPath()) {
 			return OpenFileInfo("");
@@ -363,13 +385,13 @@ OpenFileInfo GlobMultiFileList::GetFileInternal(idx_t i) {
 	return expanded_files[i];
 }
 
-bool GlobMultiFileList::ExpandPathInternal(idx_t &current_path, vector<OpenFileInfo> &result) const {
+bool GlobMultiFileList::ExpandPathInternal(idx_t &current_path, vector<OpenFileInfo> &result, idx_t max_files) const {
 	if (current_path >= paths.size()) {
 		return false;
 	}
 
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto glob_files = fs.GlobFiles(paths[current_path].path, context, glob_options);
+	auto glob_files = fs.GlobFiles(paths[current_path].path, context, glob_options, max_files);
 	std::sort(glob_files.begin(), glob_files.end());
 	result.insert(result.end(), glob_files.begin(), glob_files.end());
 
@@ -377,8 +399,8 @@ bool GlobMultiFileList::ExpandPathInternal(idx_t &current_path, vector<OpenFileI
 	return true;
 }
 
-bool GlobMultiFileList::ExpandNextPath() {
-	return ExpandPathInternal(current_path, expanded_files);
+bool GlobMultiFileList::ExpandNextPath(idx_t max_files) {
+	return ExpandPathInternal(current_path, expanded_files, max_files);
 }
 
 bool GlobMultiFileList::IsFullyExpanded() const {

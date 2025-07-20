@@ -228,8 +228,9 @@ public:
 	DUCKDB_API static bool HasGlob(const string &str);
 	//! Runs a glob on the file system, returning a list of matching files
 	DUCKDB_API virtual vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr);
+	DUCKDB_API virtual vector<OpenFileInfo> GlobFiltered(const string &path, FileOpener *opener = nullptr, idx_t max_files = 0);
 	DUCKDB_API vector<OpenFileInfo> GlobFiles(const string &path, ClientContext &context,
-	                                          FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY);
+	                                          FileGlobOptions options = FileGlobOptions::DISALLOW_EMPTY, idx_t max_files = std::numeric_limits<idx_t>::max());
 
 	//! registers a sub-file system to handle certain file name prefixes, e.g. http:// etc.
 	DUCKDB_API virtual void RegisterSubSystem(unique_ptr<FileSystem> sub_fs);

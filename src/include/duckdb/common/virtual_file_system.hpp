@@ -49,6 +49,7 @@ public:
 	bool TryRemoveFile(const string &filename, optional_ptr<FileOpener> opener) override;
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
+	vector<OpenFileInfo> GlobFiltered(const string &path, FileOpener *opener = nullptr, idx_t max_files = std::numeric_limits<idx_t>::max()) override;
 
 	void RegisterSubSystem(unique_ptr<FileSystem> fs) override;
 
