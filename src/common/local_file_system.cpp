@@ -235,8 +235,15 @@ private:
 class RecursiveGlobDirectoryIterator : public FileIterator {
 public:
 	RecursiveGlobDirectoryIterator(FileSystem &fs, const string &initial_path, bool match_directory, bool join_path)
-	    : fs(fs), match_directory(match_directory) {
+	    : fs(fs), match_directory(match_directory), return_all_items(false) {
 		// Start with the initial path
+		directory_stack.emplace_back(initial_path, join_path);
+	}
+
+	// Special constructor for recursive crawl that returns all items
+	RecursiveGlobDirectoryIterator(FileSystem &fs, const string &initial_path, bool join_path)
+	    : fs(fs), match_directory(false), return_all_items(true) {
+		// Start with the initial path  
 		directory_stack.emplace_back(initial_path, join_path);
 	}
 
@@ -257,6 +264,7 @@ public:
 private:
 	FileSystem &fs;
 	bool match_directory;
+	bool return_all_items; // If true, return both files and directories
 	vector<std::pair<string, bool>> directory_stack; // (path, join_path)
 	unique_ptr<CombinedListingIterator> current_listing;
 	OpenFileInfo next_item;
@@ -277,8 +285,9 @@ private:
 				directory_stack.emplace_back(candidate.path, true);
 			}
 			
-			// If this matches what we're looking for, save it as next item
-			if (is_directory == match_directory) {
+			// Determine if we should return this item
+			bool should_return = return_all_items || (is_directory == match_directory);
+			if (should_return) {
 				next_item = std::move(candidate);
 				return true;
 			}
@@ -308,6 +317,151 @@ private:
 };
 
 //===--------------------------------------------------------------------===//
+// Path Joining Iterator - appends a literal path component to each item from source
+//===--------------------------------------------------------------------===//
+class PathJoiningIterator : public FileIterator {
+public:
+	PathJoiningIterator(FileSystem &fs, vector<unique_ptr<FileIterator>> sources, const string &component, 
+	                    bool is_last_chunk, FileOpener *opener)
+	    : fs(fs), sources(std::move(sources)), component(component), is_last_chunk(is_last_chunk), 
+	      opener(opener), current_source_index(0) {}
+
+	bool HasNext() override {
+		return FindNextValidItem();
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("PathJoiningIterator: Next() called when no more items available");
+		}
+		auto result = std::move(next_item);
+		next_item = OpenFileInfo(""); // Mark as consumed
+		return result;
+	}
+
+private:
+	FileSystem &fs;
+	vector<unique_ptr<FileIterator>> sources;
+	string component;
+	bool is_last_chunk;
+	FileOpener *opener;
+	idx_t current_source_index;
+	OpenFileInfo next_item;
+
+	bool FindNextValidItem() {
+		if (!next_item.path.empty()) {
+			return true; // Already have next item ready
+		}
+
+		while (current_source_index < sources.size()) {
+			auto &current_source = sources[current_source_index];
+			
+			if (current_source->HasNext()) {
+				auto source_item = current_source->Next();
+				string joined_path = fs.JoinPath(source_item.path, component);
+				
+				if (is_last_chunk) {
+					// For last chunk, verify file/directory exists
+					if (fs.FileExists(joined_path, opener) || fs.DirectoryExists(joined_path, opener)) {
+						next_item = OpenFileInfo(joined_path);
+						return true;
+					}
+				} else {
+					// For intermediate chunks, just build the path
+					next_item = OpenFileInfo(joined_path);
+					return true;
+				}
+			} else {
+				// Move to next source
+				current_source_index++;
+			}
+		}
+		
+		return false;
+	}
+};
+
+//===--------------------------------------------------------------------===//
+// Multi-Source Iterator - combines multiple source iterators
+//===--------------------------------------------------------------------===//
+class MultiSourceIterator : public FileIterator {
+public:
+	MultiSourceIterator(vector<unique_ptr<FileIterator>> sources) 
+	    : sources(std::move(sources)), current_source_index(0) {}
+
+	bool HasNext() override {
+		while (current_source_index < sources.size()) {
+			if (sources[current_source_index]->HasNext()) {
+				return true;
+			}
+			current_source_index++;
+		}
+		return false;
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("MultiSourceIterator: Next() called when no more items available");
+		}
+		return sources[current_source_index]->Next();
+	}
+
+private:
+	vector<unique_ptr<FileIterator>> sources;
+	idx_t current_source_index;
+};
+
+//===--------------------------------------------------------------------===//
+// Recursive Crawl Iterator - handles recursive crawl from multiple source paths
+//===--------------------------------------------------------------------===//
+class RecursiveCrawlIterator : public FileIterator {
+public:
+	RecursiveCrawlIterator(FileSystem &fs, vector<unique_ptr<FileIterator>> sources, bool is_last_chunk)
+	    : fs(fs), sources(std::move(sources)), is_last_chunk(is_last_chunk), current_source_index(0), current_recursive(nullptr) {}
+
+	bool HasNext() override {
+		while (current_source_index < sources.size() || (current_recursive && current_recursive->HasNext())) {
+			if (!current_recursive || !current_recursive->HasNext()) {
+				// Move to next source and create recursive iterator for it
+				if (current_source_index < sources.size() && sources[current_source_index]->HasNext()) {
+					auto source_path = sources[current_source_index]->Next();
+					if (is_last_chunk) {
+						// If this is the last chunk, return files/directories based on context
+						current_recursive = make_uniq<RecursiveGlobDirectoryIterator>(fs, source_path.path, false, true);
+					} else {
+						// If not the last chunk, return all items for subsequent filtering
+						current_recursive = make_uniq<RecursiveGlobDirectoryIterator>(fs, source_path.path, true);
+					}
+				} else {
+					current_source_index++;
+					current_recursive = nullptr;
+					continue;
+				}
+			}
+			
+			if (current_recursive && current_recursive->HasNext()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("RecursiveCrawlIterator: Next() called when no more items available");
+		}
+		return current_recursive->Next();
+	}
+
+private:
+	FileSystem &fs;
+	vector<unique_ptr<FileIterator>> sources;
+	bool is_last_chunk;
+	idx_t current_source_index;
+	unique_ptr<RecursiveGlobDirectoryIterator> current_recursive;
+};
+
+//===--------------------------------------------------------------------===//
 // Glob File Iterator - applies glob pattern matching to another iterator
 //===--------------------------------------------------------------------===//
 class GlobFileIterator : public FileIterator {
@@ -323,6 +477,31 @@ public:
 	    : fs(fs), glob(glob), match_directory(match_directory), source_iterator(std::move(source)), directory_iterator(nullptr) {}
 
 	bool HasNext() override {
+		return FindNextMatchingItem();
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("GlobFileIterator: Next() called when no more items available");
+		}
+		auto result = std::move(next_item);
+		next_item = OpenFileInfo(""); // Mark as consumed
+		return result;
+	}
+
+private:
+	FileSystem &fs;
+	string glob;
+	bool match_directory;
+	unique_ptr<FileIterator> source_iterator;
+	unique_ptr<DirectoryListingIterator> directory_iterator;
+	OpenFileInfo next_item;
+
+	bool FindNextMatchingItem() {
+		if (!next_item.path.empty()) {
+			return true; // Already have next item ready
+		}
+
 		// Try to find the next item that matches the glob
 		while (GetSourceIterator().HasNext()) {
 			auto candidate = GetSourceIterator().Next();
@@ -341,31 +520,12 @@ public:
 			
 			if (Glob(filename.c_str(), filename.size(), glob.c_str(), glob.size())) {
 				next_item = std::move(candidate);
-				has_next_item = true;
 				return true;
 			}
 		}
 		
-		has_next_item = false;
 		return false;
 	}
-
-	OpenFileInfo Next() override {
-		if (!has_next_item && !HasNext()) {
-			throw InternalException("GlobFileIterator: Next() called when no more items available");
-		}
-		has_next_item = false;
-		return std::move(next_item);
-	}
-
-private:
-	FileSystem &fs;
-	string glob;
-	bool match_directory;
-	unique_ptr<FileIterator> source_iterator;
-	unique_ptr<DirectoryListingIterator> directory_iterator;
-	OpenFileInfo next_item;
-	bool has_next_item = false;
 
 	FileIterator& GetSourceIterator() {
 		if (source_iterator) {
@@ -1745,10 +1905,10 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 		// no glob: return only the file (if it exists or is a pipe)
 		return FetchFileWithoutGlob(path, opener, absolute_path);
 	}
-	vector<OpenFileInfo> previous_directories;
+	vector<unique_ptr<FileIterator>> previous_iterators;
 	if (absolute_path) {
 		// for absolute paths, we don't start by scanning the current directory
-		previous_directories.push_back(splits[0]);
+		previous_iterators.push_back(make_uniq<SinglePathIterator>(splits[0]));
 	} else {
 		// If file_search_path is set, use those paths as the first glob elements
 		Value value;
@@ -1756,7 +1916,7 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 			auto search_paths_str = value.ToString();
 			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
 			for (const auto &search_path : search_paths) {
-				previous_directories.push_back(search_path);
+				previous_iterators.push_back(make_uniq<SinglePathIterator>(search_path));
 			}
 		}
 	}
@@ -1777,68 +1937,62 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 	for (idx_t i = start_index ? 1 : 0; i < splits.size(); i++) {
 		bool is_last_chunk = i + 1 == splits.size();
 		bool has_glob = HasGlob(splits[i]);
-		// if it's the last chunk we need to find files, otherwise we find directories
-		// not the last chunk: gather a list of all directories that match the glob pattern
-		vector<OpenFileInfo> result;
+		
+		unique_ptr<FileIterator> new_iterator;
+		
 		if (!has_glob) {
-			// no glob, just append as-is
-			if (previous_directories.empty()) {
-				result.push_back(splits[i]);
+			// No glob, just append the literal path component
+			if (previous_iterators.empty()) {
+				new_iterator = make_uniq<SinglePathIterator>(splits[i]);
 			} else {
-				if (is_last_chunk) {
-					for (auto &prev_directory : previous_directories) {
-						const string filename = JoinPath(prev_directory.path, splits[i]);
-						if (FileExists(filename, opener) || DirectoryExists(filename, opener)) {
-							result.push_back(filename);
-						}
-					}
-				} else {
-					for (auto &prev_directory : previous_directories) {
-						result.push_back(JoinPath(prev_directory.path, splits[i]));
-					}
-				}
+				// Use PathJoiningIterator to append component to all previous paths
+				new_iterator = make_uniq<PathJoiningIterator>(*this, std::move(previous_iterators), splits[i], is_last_chunk, opener);
 			}
 		} else {
 			if (IsCrawl(splits[i])) {
-				if (!is_last_chunk) {
-					result = previous_directories;
-				}
-				if (previous_directories.empty()) {
-					auto iterator = RecursiveGlobDirectories(*this, ".", !is_last_chunk, false);
-					auto new_results = CollectIteratorResults(std::move(iterator));
-					result.insert(result.end(), new_results.begin(), new_results.end());
-				} else {
-					for (auto &prev_dir : previous_directories) {
-						auto iterator = RecursiveGlobDirectories(*this, prev_dir.path, !is_last_chunk, true);
-						auto new_results = CollectIteratorResults(std::move(iterator));
-						result.insert(result.end(), new_results.begin(), new_results.end());
+				// Recursive crawl (**)
+				if (previous_iterators.empty()) {
+					if (is_last_chunk) {
+						// If ** is the last chunk, return files/directories based on context
+						new_iterator = RecursiveGlobDirectories(*this, ".", !is_last_chunk, false);
+					} else {
+						// If ** is in the middle, return ALL items for subsequent filtering
+						new_iterator = make_uniq<RecursiveGlobDirectoryIterator>(*this, ".", false);
 					}
+				} else {
+					// Create a combined iterator that feeds each previous path into a RecursiveGlobDirectoryIterator
+					new_iterator = make_uniq<RecursiveCrawlIterator>(*this, std::move(previous_iterators), is_last_chunk);
 				}
 			} else {
-				if (previous_directories.empty()) {
-					// no previous directories: list in the current path
-					auto iterator = GlobFilesInternal(*this, ".", splits[i], !is_last_chunk, false);
-					result = CollectIteratorResults(std::move(iterator));
+				// Regular glob pattern
+				if (previous_iterators.empty()) {
+					// No previous directories: list in the current path
+					new_iterator = GlobFilesInternal(*this, ".", splits[i], !is_last_chunk, false);
 				} else {
-					// previous directories
-					// we iterate over each of the previous directories, and apply the glob of the current directory
-					for (auto &prev_directory : previous_directories) {
-						auto iterator = GlobFilesInternal(*this, prev_directory.path, splits[i], !is_last_chunk, true);
-						auto new_results = CollectIteratorResults(std::move(iterator));
-						result.insert(result.end(), new_results.begin(), new_results.end());
-					}
+					// Chain glob iterator to consume from combined previous iterators
+					auto combined_source = make_uniq<MultiSourceIterator>(std::move(previous_iterators));
+					new_iterator = GlobFilesInternal(*this, std::move(combined_source), splits[i], !is_last_chunk);
 				}
 			}
 		}
-		if (result.empty()) {
-			// no result found that matches the glob
-			// last ditch effort: search the path as a string literal
+		
+		if (!new_iterator) {
+			// No iterator created - search as literal path
 			return FetchFileWithoutGlob(path, opener, absolute_path);
 		}
+		
 		if (is_last_chunk) {
+			// Collect results from final iterator
+			vector<OpenFileInfo> result;
+			while (new_iterator->HasNext()) {
+				result.push_back(new_iterator->Next());
+			}
 			return result;
 		}
-		previous_directories = std::move(result);
+		
+		// Move to next level with single iterator
+		previous_iterators.clear();
+		previous_iterators.push_back(std::move(new_iterator));
 	}
 	return vector<OpenFileInfo>();
 }
