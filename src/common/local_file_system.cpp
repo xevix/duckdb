@@ -60,6 +60,321 @@ extern "C" WINBASEAPI BOOL QueryFullProcessImageNameW(HANDLE, DWORD, LPWSTR, PDW
 #endif
 
 namespace duckdb {
+
+//===--------------------------------------------------------------------===//
+// Static Helper Functions
+//===--------------------------------------------------------------------===//
+static bool IsCrawl(const string &glob) {
+	// glob must match exactly
+	return glob == "**";
+}
+
+static bool HasMultipleCrawl(const vector<string> &splits) {
+	return std::count(splits.begin(), splits.end(), "**") > 1;
+}
+
+static bool IsSymbolicLink(const string &path) {
+	auto normalized_path = LocalFileSystem::NormalizeLocalPath(path);
+#ifndef _WIN32
+	struct stat status;
+	return (lstat(normalized_path, &status) != -1 && S_ISLNK(status.st_mode));
+#else
+	auto attributes = WindowsGetFileAttributes(path);
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		return false;
+	return attributes & FILE_ATTRIBUTE_REPARSE_POINT;
+#endif
+}
+
+//===--------------------------------------------------------------------===//
+// File Iterator Interface
+//===--------------------------------------------------------------------===//
+class FileIterator {
+public:
+	virtual ~FileIterator() = default;
+	virtual bool HasNext() = 0;
+	virtual OpenFileInfo Next() = 0;
+};
+
+//===--------------------------------------------------------------------===//
+// Single Path Iterator - wraps a single path
+//===--------------------------------------------------------------------===//
+class SinglePathIterator : public FileIterator {
+public:
+	SinglePathIterator(const string &path) : path(path), consumed(false) {}
+
+	bool HasNext() override {
+		return !consumed;
+	}
+
+	OpenFileInfo Next() override {
+		if (consumed) {
+			throw InternalException("SinglePathIterator: Next() called when no more items available");
+		}
+		consumed = true;
+		return OpenFileInfo(path);
+	}
+
+private:
+	string path;
+	bool consumed;
+};
+
+//===--------------------------------------------------------------------===//
+// Directory Listing Iterator - lists files in a single directory
+//===--------------------------------------------------------------------===//
+class DirectoryListingIterator : public FileIterator {
+public:
+	DirectoryListingIterator(FileSystem &fs, const string &path, bool match_directory, bool join_path)
+	    : fs(fs), base_path(path), match_directory(match_directory), join_path(join_path), initialized(false) {}
+
+	bool HasNext() override {
+		if (!initialized) {
+			Initialize();
+		}
+		return current_index < files.size();
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("DirectoryListingIterator: Next() called when no more items available");
+		}
+		auto result = std::move(files[current_index]);
+		current_index++;
+		return result;
+	}
+
+private:
+	FileSystem &fs;
+	string base_path;
+	bool match_directory;
+	bool join_path;
+	bool initialized;
+	vector<OpenFileInfo> files;
+	idx_t current_index = 0;
+
+	void Initialize() {
+		initialized = true;
+		fs.ListFiles(base_path, [&](OpenFileInfo &info) {
+			if (join_path) {
+				info.path = fs.JoinPath(base_path, info.path);
+			}
+			if (IsSymbolicLink(info.path)) {
+				return;
+			}
+			bool is_directory = FileSystem::IsDirectory(info);
+			if (is_directory == match_directory) {
+				files.push_back(std::move(info));
+			}
+		});
+	}
+};
+
+//===--------------------------------------------------------------------===//
+// Combined File and Directory Iterator - lists both files and directories
+//===--------------------------------------------------------------------===//
+class CombinedListingIterator : public FileIterator {
+public:
+	CombinedListingIterator(FileSystem &fs, const string &path, bool join_path)
+	    : fs(fs), base_path(path), join_path(join_path), files_done(false), dirs_done(false) {}
+
+	bool HasNext() override {
+		// First exhaust files, then directories
+		if (!files_done) {
+			if (!file_iterator) {
+				file_iterator = make_uniq<DirectoryListingIterator>(fs, base_path, false, join_path);
+			}
+			if (file_iterator->HasNext()) {
+				return true;
+			}
+			files_done = true;
+		}
+		
+		if (!dirs_done) {
+			if (!dir_iterator) {
+				dir_iterator = make_uniq<DirectoryListingIterator>(fs, base_path, true, join_path);
+			}
+			if (dir_iterator->HasNext()) {
+				return true;
+			}
+			dirs_done = true;
+		}
+		
+		return false;
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("CombinedListingIterator: Next() called when no more items available");
+		}
+		
+		if (!files_done && file_iterator && file_iterator->HasNext()) {
+			return file_iterator->Next();
+		}
+		
+		if (!dirs_done && dir_iterator && dir_iterator->HasNext()) {
+			return dir_iterator->Next();
+		}
+		
+		throw InternalException("CombinedListingIterator: Inconsistent state in Next()");
+	}
+
+private:
+	FileSystem &fs;
+	string base_path;
+	bool join_path;
+	bool files_done;
+	bool dirs_done;
+	unique_ptr<DirectoryListingIterator> file_iterator;
+	unique_ptr<DirectoryListingIterator> dir_iterator;
+};
+
+//===--------------------------------------------------------------------===//
+// Recursive Glob Directory Iterator
+//===--------------------------------------------------------------------===//
+class RecursiveGlobDirectoryIterator : public FileIterator {
+public:
+	RecursiveGlobDirectoryIterator(FileSystem &fs, const string &initial_path, bool match_directory, bool join_path)
+	    : fs(fs), match_directory(match_directory) {
+		// Start with the initial path
+		directory_stack.emplace_back(initial_path, join_path);
+	}
+
+	bool HasNext() override {
+		return FindNextMatchingItem();
+	}
+
+	OpenFileInfo Next() override {
+		if (!HasNext()) {
+			throw InternalException("RecursiveGlobDirectoryIterator: Next() called when no more items available");
+		}
+		
+		auto result = std::move(next_item);
+		next_item = OpenFileInfo(""); // Mark as consumed
+		return result;
+	}
+
+private:
+	FileSystem &fs;
+	bool match_directory;
+	vector<std::pair<string, bool>> directory_stack; // (path, join_path)
+	unique_ptr<CombinedListingIterator> current_listing;
+	OpenFileInfo next_item;
+
+	bool FindNextMatchingItem() {
+		// If we already have a next item ready, return true
+		if (!next_item.path.empty()) {
+			return true;
+		}
+		
+		// Process current directory if available
+		while (current_listing && current_listing->HasNext()) {
+			auto candidate = current_listing->Next();
+			bool is_directory = FileSystem::IsDirectory(candidate);
+			
+			// Add directories to stack for future recursion (always use join_path=true for recursive calls)
+			if (is_directory) {
+				directory_stack.emplace_back(candidate.path, true);
+			}
+			
+			// If this matches what we're looking for, save it as next item
+			if (is_directory == match_directory) {
+				next_item = std::move(candidate);
+				return true;
+			}
+		}
+		
+		// Move to next directory in stack
+		while (!directory_stack.empty()) {
+			auto stack_entry = directory_stack.back();
+			directory_stack.pop_back();
+			const string &path = stack_entry.first;
+			bool join_path = stack_entry.second;
+			
+			try {
+				current_listing = make_uniq<CombinedListingIterator>(fs, path, join_path);
+				// Recursively call to process this directory
+				if (FindNextMatchingItem()) {
+					return true;
+				}
+			} catch (...) {
+				// Skip directories we can't access
+				continue;
+			}
+		}
+		
+		return false; // No more items found
+	}
+};
+
+//===--------------------------------------------------------------------===//
+// Glob File Iterator - applies glob pattern matching to another iterator
+//===--------------------------------------------------------------------===//
+class GlobFileIterator : public FileIterator {
+public:
+	// Constructor for directory-based glob
+	GlobFileIterator(FileSystem &fs, const string &path, const string &glob, bool match_directory, bool join_path)
+	    : fs(fs), glob(glob), match_directory(match_directory), source_iterator(nullptr) {
+		directory_iterator = make_uniq<DirectoryListingIterator>(fs, path, match_directory, join_path);
+	}
+
+	// Constructor for iterator-based glob (chaining)
+	GlobFileIterator(FileSystem &fs, unique_ptr<FileIterator> source, const string &glob, bool match_directory)
+	    : fs(fs), glob(glob), match_directory(match_directory), source_iterator(std::move(source)), directory_iterator(nullptr) {}
+
+	bool HasNext() override {
+		// Try to find the next item that matches the glob
+		while (GetSourceIterator().HasNext()) {
+			auto candidate = GetSourceIterator().Next();
+			bool is_directory = FileSystem::IsDirectory(candidate);
+			
+			if (is_directory != match_directory) {
+				continue;
+			}
+			
+			// Extract just the filename for glob matching
+			string filename = candidate.path;
+			auto last_slash = filename.find_last_of("/\\");
+			if (last_slash != string::npos) {
+				filename = filename.substr(last_slash + 1);
+			}
+			
+			if (Glob(filename.c_str(), filename.size(), glob.c_str(), glob.size())) {
+				next_item = std::move(candidate);
+				has_next_item = true;
+				return true;
+			}
+		}
+		
+		has_next_item = false;
+		return false;
+	}
+
+	OpenFileInfo Next() override {
+		if (!has_next_item && !HasNext()) {
+			throw InternalException("GlobFileIterator: Next() called when no more items available");
+		}
+		has_next_item = false;
+		return std::move(next_item);
+	}
+
+private:
+	FileSystem &fs;
+	string glob;
+	bool match_directory;
+	unique_ptr<FileIterator> source_iterator;
+	unique_ptr<DirectoryListingIterator> directory_iterator;
+	OpenFileInfo next_item;
+	bool has_next_item = false;
+
+	FileIterator& GetSourceIterator() {
+		if (source_iterator) {
+			return *source_iterator;
+		}
+		return *directory_iterator;
+	}
+};
+
 #ifndef _WIN32
 bool LocalFileSystem::FileExists(const string &filename, optional_ptr<FileOpener> opener) {
 	if (!filename.empty()) {
@@ -1290,63 +1605,30 @@ idx_t LocalFileSystem::SeekPosition(FileHandle &handle) {
 	return GetFilePointer(handle);
 }
 
-static bool IsCrawl(const string &glob) {
-	// glob must match exactly
-	return glob == "**";
-}
-static bool HasMultipleCrawl(const vector<string> &splits) {
-	return std::count(splits.begin(), splits.end(), "**") > 1;
-}
-static bool IsSymbolicLink(const string &path) {
-	auto normalized_path = LocalFileSystem::NormalizeLocalPath(path);
-#ifndef _WIN32
-	struct stat status;
-	return (lstat(normalized_path, &status) != -1 && S_ISLNK(status.st_mode));
-#else
-	auto attributes = WindowsGetFileAttributes(path);
-	if (attributes == INVALID_FILE_ATTRIBUTES)
-		return false;
-	return attributes & FILE_ATTRIBUTE_REPARSE_POINT;
-#endif
+
+
+static unique_ptr<FileIterator> RecursiveGlobDirectories(FileSystem &fs, const string &path,
+                                                         bool match_directory, bool join_path) {
+	return make_uniq<RecursiveGlobDirectoryIterator>(fs, path, match_directory, join_path);
 }
 
-static void RecursiveGlobDirectories(FileSystem &fs, const string &path, vector<OpenFileInfo> &result,
-                                     bool match_directory, bool join_path) {
-
-	fs.ListFiles(path, [&](OpenFileInfo &info) {
-		if (join_path) {
-			info.path = fs.JoinPath(path, info.path);
-		}
-		if (IsSymbolicLink(info.path)) {
-			return;
-		}
-		bool is_directory = FileSystem::IsDirectory(info);
-		bool return_file = is_directory == match_directory;
-		if (is_directory) {
-			if (return_file) {
-				result.push_back(info);
-			}
-			RecursiveGlobDirectories(fs, info.path, result, match_directory, true);
-		} else if (return_file) {
-			result.push_back(std::move(info));
-		}
-	});
+static unique_ptr<FileIterator> GlobFilesInternal(FileSystem &fs, const string &path, const string &glob, 
+                                                   bool match_directory, bool join_path) {
+	return make_uniq<GlobFileIterator>(fs, path, glob, match_directory, join_path);
 }
 
-static void GlobFilesInternal(FileSystem &fs, const string &path, const string &glob, bool match_directory,
-                              vector<OpenFileInfo> &result, bool join_path) {
-	fs.ListFiles(path, [&](OpenFileInfo &info) {
-		bool is_directory = FileSystem::IsDirectory(info);
-		if (is_directory != match_directory) {
-			return;
-		}
-		if (Glob(info.path.c_str(), info.path.size(), glob.c_str(), glob.size())) {
-			if (join_path) {
-				info.path = fs.JoinPath(path, info.path);
-			}
-			result.push_back(std::move(info));
-		}
-	});
+static unique_ptr<FileIterator> GlobFilesInternal(FileSystem &fs, unique_ptr<FileIterator> source, 
+                                                   const string &glob, bool match_directory) {
+	return make_uniq<GlobFileIterator>(fs, std::move(source), glob, match_directory);
+}
+
+// Helper function to collect all results from an iterator
+static vector<OpenFileInfo> CollectIteratorResults(unique_ptr<FileIterator> iterator) {
+	vector<OpenFileInfo> result;
+	while (iterator->HasNext()) {
+		result.push_back(iterator->Next());
+	}
+	return result;
 }
 
 vector<OpenFileInfo> LocalFileSystem::FetchFileWithoutGlob(const string &path, FileOpener *opener, bool absolute_path) {
@@ -1522,21 +1804,28 @@ vector<OpenFileInfo> LocalFileSystem::Glob(const string &path, FileOpener *opene
 					result = previous_directories;
 				}
 				if (previous_directories.empty()) {
-					RecursiveGlobDirectories(*this, ".", result, !is_last_chunk, false);
+					auto iterator = RecursiveGlobDirectories(*this, ".", !is_last_chunk, false);
+					auto new_results = CollectIteratorResults(std::move(iterator));
+					result.insert(result.end(), new_results.begin(), new_results.end());
 				} else {
 					for (auto &prev_dir : previous_directories) {
-						RecursiveGlobDirectories(*this, prev_dir.path, result, !is_last_chunk, true);
+						auto iterator = RecursiveGlobDirectories(*this, prev_dir.path, !is_last_chunk, true);
+						auto new_results = CollectIteratorResults(std::move(iterator));
+						result.insert(result.end(), new_results.begin(), new_results.end());
 					}
 				}
 			} else {
 				if (previous_directories.empty()) {
 					// no previous directories: list in the current path
-					GlobFilesInternal(*this, ".", splits[i], !is_last_chunk, result, false);
+					auto iterator = GlobFilesInternal(*this, ".", splits[i], !is_last_chunk, false);
+					result = CollectIteratorResults(std::move(iterator));
 				} else {
 					// previous directories
 					// we iterate over each of the previous directories, and apply the glob of the current directory
 					for (auto &prev_directory : previous_directories) {
-						GlobFilesInternal(*this, prev_directory.path, splits[i], !is_last_chunk, result, true);
+						auto iterator = GlobFilesInternal(*this, prev_directory.path, splits[i], !is_last_chunk, true);
+						auto new_results = CollectIteratorResults(std::move(iterator));
+						result.insert(result.end(), new_results.begin(), new_results.end());
 					}
 				}
 			}
