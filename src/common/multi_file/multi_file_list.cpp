@@ -369,7 +369,11 @@ OpenFileInfo GlobMultiFileList::GetFileInternal(idx_t i) {
 		if(!ExpandNextPath(2)) {
 			return OpenFileInfo("");
 		}
-		return expanded_files[i];
+		// Check if we actually got the file we need
+		if (expanded_files.size() > i) {
+			return expanded_files[i];
+		}
+		return OpenFileInfo("");
 	}
 	// Beyond the first files, clear the cache if we don't have the file required and load entire file list eagerly
 	// HACK: testing

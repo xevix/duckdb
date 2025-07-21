@@ -495,6 +495,7 @@ private:
 	bool match_directory;
 	unique_ptr<FileIterator> source_iterator;
 	unique_ptr<DirectoryListingIterator> directory_iterator;
+	unique_ptr<DirectoryListingIterator> current_dir_iterator;
 	OpenFileInfo next_item;
 
 	bool FindNextMatchingItem() {
@@ -506,6 +507,33 @@ private:
 		while (GetSourceIterator().HasNext()) {
 			auto candidate = GetSourceIterator().Next();
 			bool is_directory = FileSystem::IsDirectory(candidate);
+			
+			if (is_directory && !match_directory) {
+				// We have a directory but we want files - list the directory contents
+				if (!current_dir_iterator || !current_dir_iterator->HasNext()) {
+					// Create new directory iterator for this directory
+					current_dir_iterator = make_uniq<DirectoryListingIterator>(fs, candidate.path, false, true);
+				}
+				// Try to get files from the current directory
+				while (current_dir_iterator && current_dir_iterator->HasNext()) {
+					auto file_candidate = current_dir_iterator->Next();
+					
+					// Extract just the filename for glob matching
+					string filename = file_candidate.path;
+					auto last_slash = filename.find_last_of("/\\");
+					if (last_slash != string::npos) {
+						filename = filename.substr(last_slash + 1);
+					}
+					
+					if (Glob(filename.c_str(), filename.size(), glob.c_str(), glob.size())) {
+						next_item = std::move(file_candidate);
+						return true;
+					}
+				}
+				// Done with this directory, reset iterator and continue to next source
+				current_dir_iterator = nullptr;
+				continue;
+			}
 			
 			if (is_directory != match_directory) {
 				continue;
@@ -1941,7 +1969,7 @@ vector<OpenFileInfo> LocalFileSystem::GlobFiltered(const string &path, FileOpene
 	bool stop = false;
 	idx_t files_added = 0;
 
-	for (idx_t i = start_index ? 1 : 0; i < splits.size() && !stop; i++) {
+	for (idx_t i = start_index; i < splits.size() && !stop; i++) {
 		bool is_last_chunk = i + 1 == splits.size();
 		bool has_glob = HasGlob(splits[i]);
 		
