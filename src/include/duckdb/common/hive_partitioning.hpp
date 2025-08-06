@@ -159,13 +159,27 @@ struct HiveClientContextState : public ClientContextState {
 	}
 
 	RebindQueryInfo OnPlanningError(ClientContext &context, SQLStatement &statement, ErrorData &error) override {
+		if (!hive_lazy_listing) {
+			return RebindQueryInfo::DO_NOT_REBIND;
+		}
 		// If the error was caused by lazy listing, we attempt a rebind with hive lazy listing false
-		if (hive_lazy_listing && error.Type() == ExceptionType::OPTIMIZER) {
+		if (error.Type() == ExceptionType::OPTIMIZER) {
 			auto &info = error.ExtraInfo();
-			auto hive_error_it = info.find("hive_error");
-			if (hive_error_it != info.end()) {
-				auto hive_error = hive_error_it->second;
-				if (hive_error == "lazy") {
+			auto error_it = info.find("hive_error");
+			if (error_it != info.end()) {
+				auto sub_error = error_it->second;
+				if (sub_error == "lazy") {
+					hive_lazy_listing = false;
+					return RebindQueryInfo::ATTEMPT_TO_REBIND;
+				}
+			}
+		} else if (error.Type() == ExceptionType::BINDER) {
+			// TODO: narrow down bind error to being caused by table function, maybe with more ExtraInfo
+			auto &info = error.ExtraInfo();
+			auto error_it = info.find("error_subtype");
+			if (error_it != info.end()) {
+				auto sub_error = error_it->second;
+				if (sub_error == "COLUMN_NOT_FOUND") {
 					hive_lazy_listing = false;
 					return RebindQueryInfo::ATTEMPT_TO_REBIND;
 				}
