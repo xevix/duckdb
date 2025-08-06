@@ -25,7 +25,7 @@ struct MultiFileOptions {
 	bool auto_detect_hive_partitioning = true;
 	bool union_by_name = false;
 	bool hive_types_autocast = true;
-	bool hive_lazy_listing = false;
+	bool hive_lazy_listing = true;
 	MultiFileColumnMappingMode mapping = MultiFileColumnMappingMode::BY_NAME;
 
 	case_insensitive_map_t<LogicalType> hive_types_schema;

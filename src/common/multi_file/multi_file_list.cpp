@@ -279,10 +279,33 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
 	lock_guard<mutex> lck(lock);
 
 	if (options.hive_lazy_listing) {
+		bool filters_empty = filters.empty();
 		HiveFilterParams hive_filter_params(context, filters, options, info);
 		while (ExpandNextPath(std::numeric_limits<idx_t>::max(), false, &hive_filter_params)) {
 		}
-		return make_uniq<SimpleMultiFileList>(expanded_files);
+		auto res = make_uniq<SimpleMultiFileList>(expanded_files);
+		// Check Hive partitioning
+		MultiFileOptions options_copy = options;
+		options_copy.hive_lazy_listing = false;
+		options_copy.AutoDetectHivePartitioning(*res, context_p);
+		// Hive partitioning was detected in early peek at files, but turns out not to be the case
+		if (options.hive_partitioning && !options_copy.hive_partitioning) {
+			throw Exception(ExceptionType::OPTIMIZER,
+			                "hive_lazy_listing true, part of data is Hive partitioned, but part of it is not",
+			                {{"hive_error", "lazy"}});
+		}
+		if (filters_empty) {
+			if (options_copy.hive_partitioning) {
+				throw Exception(ExceptionType::OPTIMIZER, "hive_lazy_listing true but no Hive filters",
+				                {{"hive_error", "lazy"}});
+			}
+		} else {
+			if (!options_copy.hive_partitioning) {
+				throw Exception(ExceptionType::OPTIMIZER, "hive_lazy_listing true but invalid Hive partitioning",
+				                {{"hive_error", "lazy"}});
+			}
+		}
+		return res;
 	}
 
 	// Expand all

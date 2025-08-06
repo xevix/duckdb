@@ -797,6 +797,12 @@ void MultiFileOptions::AutoDetectHivePartitioning(MultiFileList &files, ClientCo
 		hive_lazy_listing = false;
 	}
 
+	// Rebind with eager loading
+	auto state = context.registered_state->Get<HiveClientContextState>("hive_client_context_state");
+	if (!state->hive_lazy_listing) {
+		hive_lazy_listing = false;
+	}
+
 	if (auto_detect_hive_partitioning) {
 		hive_partitioning = AutoDetectHivePartitioningInternal(files, context);
 	}
