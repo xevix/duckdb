@@ -284,6 +284,9 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
 		while (ExpandNextPath(std::numeric_limits<idx_t>::max(), false, &hive_filter_params)) {
 		}
 		auto res = make_uniq<SimpleMultiFileList>(expanded_files);
+		if (!options.hive_partitioning) {
+			return res;
+		}
 		// Check Hive partitioning
 		MultiFileOptions options_copy = options;
 		options_copy.hive_lazy_listing = false;
