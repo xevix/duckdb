@@ -421,7 +421,7 @@ ClientContext::CreatePreparedStatement(ClientContextLock &lock, const string &qu
 			can_request_rebind = true;
 		}
 	}
-	if (can_request_rebind) {
+	if (can_request_rebind && statement->type != StatementType::LOGICAL_PLAN_STATEMENT) {
 		bool rebind = false;
 		// if any registered state can request a rebind we do the binding on a copy first
 		shared_ptr<PreparedStatementData> result;
