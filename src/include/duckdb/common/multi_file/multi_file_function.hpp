@@ -712,12 +712,17 @@ public:
 		auto &data = bind_data_p->Cast<MultiFileBindData>();
 
 		MultiFilePushdownInfo info(get);
+		auto filter_size = filters.size();
 		auto new_list =
 		    data.multi_file_reader->ComplexFilterPushdown(context, *data.file_list, data.file_options, info, filters);
 
 		if (new_list) {
 			data.file_list = std::move(new_list);
 			MultiFileReader::PruneReaders(data, *data.file_list);
+			// Filters successfully applied, update cardinality estimates
+			if (filters.size() < filter_size) {
+				data.multi_file_reader->UpdateCardinalityEstimate(context, data, *data.file_list);
+			}
 		}
 	}
 
