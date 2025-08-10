@@ -53,6 +53,7 @@ struct MultiFileReaderInterface {
 	virtual void FinishReading(ClientContext &context, GlobalTableFunctionState &global_state,
 	                           LocalTableFunctionState &local_state);
 	virtual unique_ptr<NodeStatistics> GetCardinality(const MultiFileBindData &bind_data, idx_t file_count) = 0;
+	virtual void ResetCardinality(MultiFileBindData &multi_file_data);
 	virtual void GetVirtualColumns(ClientContext &context, MultiFileBindData &bind_data, virtual_column_map_t &result);
 	virtual unique_ptr<MultiFileReaderInterface> Copy();
 };

@@ -471,6 +471,12 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(const MultiFileB
 	return make_uniq<NodeStatistics>(MaxValue(bind_data.initial_file_cardinality, (idx_t)1) * file_count);
 }
 
+void ParquetMultiFileInfo::ResetCardinality(MultiFileBindData &multi_file_data) {
+	auto &bind_data = multi_file_data.bind_data->Cast<ParquetReadBindData>();
+	bind_data.initial_file_cardinality = 0;
+	bind_data.initial_file_row_groups = 0;
+}
+
 unique_ptr<BaseStatistics> ParquetReader::GetStatistics(ClientContext &context, const string &name) {
 	return ReadStatistics(name);
 }

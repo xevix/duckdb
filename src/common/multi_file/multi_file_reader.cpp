@@ -222,12 +222,16 @@ unique_ptr<MultiFileList> MultiFileReader::DynamicFilterPushdown(
 void MultiFileReader::UpdateCardinalityEstimate(ClientContext &context, MultiFileBindData &bind_data,
                                                 MultiFileList &files) {
 	auto options = bind_data.bind_data->GetFileReaderOptions();
-	if (options) {
-		auto reader =
-		    CreateReader(context, files.GetFirstFile(), *options, bind_data.file_options, *bind_data.interface);
-		bind_data.SetFilteredReader(reader);
-		bind_data.interface->FinalizeBindData(bind_data);
+	if (!options) {
+		return;
 	}
+	if (files.GetTotalFileCount() == 0) {
+		bind_data.interface->ResetCardinality(bind_data);
+		return;
+	}
+	auto reader = CreateReader(context, files.GetFirstFile(), *options, bind_data.file_options, *bind_data.interface);
+	bind_data.SetFilteredReader(reader);
+	bind_data.interface->FinalizeBindData(bind_data);
 }
 
 bool MultiFileReader::Bind(MultiFileOptions &options, MultiFileList &files, vector<LogicalType> &return_types,

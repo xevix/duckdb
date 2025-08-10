@@ -83,6 +83,7 @@ struct ParquetMultiFileInfo : MultiFileReaderInterface {
 	                                        BaseFileReaderOptions &options,
 	                                        const MultiFileOptions &file_options) override;
 	unique_ptr<NodeStatistics> GetCardinality(const MultiFileBindData &bind_data, idx_t file_count) override;
+	virtual void ResetCardinality(MultiFileBindData &multi_file_data) override;
 	void GetVirtualColumns(ClientContext &context, MultiFileBindData &bind_data, virtual_column_map_t &result) override;
 	unique_ptr<MultiFileReaderInterface> Copy() override;
 };
