@@ -43,6 +43,8 @@ struct ReadTextOperation {
 //------------------------------------------------------------------------------
 struct ReadFileBindData : public TableFunctionData {
 	vector<OpenFileInfo> files;
+	shared_ptr<MultiFileList> file_list;
+	MultiFileOptions file_options;
 
 	static constexpr const idx_t FILE_NAME_COLUMN = 0;
 	static constexpr const idx_t FILE_CONTENT_COLUMN = 1;
@@ -56,8 +58,30 @@ static unique_ptr<FunctionData> ReadFileBind(ClientContext &context, TableFuncti
 	auto result = make_uniq<ReadFileBindData>();
 
 	auto multi_file_reader = MultiFileReader::Create(input.table_function);
-	result->files =
-	    multi_file_reader->CreateFileList(context, input.inputs[0], FileGlobOptions::ALLOW_EMPTY)->GetAllFiles();
+	result->file_list =
+	    std::move(multi_file_reader->CreateFileList(context, input.inputs[0], FileGlobOptions::ALLOW_EMPTY));
+
+	MultiFileOptions file_options;
+
+	for (auto &kv : input.named_parameters) {
+		auto loption = StringUtil::Lower(kv.first);
+		// This option doesn't work here since no columns from the files
+		if (loption == "union_by_name") {
+			throw NotImplementedException("Unimplemented option %s", kv.first);
+		}
+		if (multi_file_reader->ParseOption(loption, kv.second, file_options, context)) {
+			continue;
+		}
+		throw NotImplementedException("Unimplemented option %s", kv.first);
+	}
+
+	// TODO: Implement lazy listing
+	// if (!file_options.hive_lazy_listing) {
+	// 	result->files = result->file_list->GetAllFiles();
+	// }
+	result->files = result->file_list->GetAllFiles();
+
+	result->file_options = std::move(file_options);
 
 	return_types.push_back(LogicalType::VARCHAR);
 	names.push_back("filename");
@@ -266,6 +290,7 @@ static unique_ptr<NodeStatistics> ReadFileCardinality(ClientContext &context, co
 template <class OP>
 static TableFunction GetFunction() {
 	TableFunction func(OP::NAME, {LogicalType::VARCHAR}, ReadFileExecute<OP>, ReadFileBind<OP>, ReadFileInitGlobal);
+	MultiFileReader::AddParameters(func);
 	func.table_scan_progress = ReadFileProgress;
 	func.cardinality = ReadFileCardinality;
 	func.projection_pushdown = true;
