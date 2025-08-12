@@ -45,6 +45,8 @@ struct ReadFileBindData : public TableFunctionData {
 	vector<OpenFileInfo> files;
 	shared_ptr<MultiFileList> file_list;
 	MultiFileOptions file_options;
+	vector<LogicalType> return_types;
+	vector<string> names;
 
 	static constexpr const idx_t FILE_NAME_COLUMN = 0;
 	static constexpr const idx_t FILE_CONTENT_COLUMN = 1;
@@ -58,8 +60,7 @@ static unique_ptr<FunctionData> ReadFileBind(ClientContext &context, TableFuncti
 	auto result = make_uniq<ReadFileBindData>();
 
 	auto multi_file_reader = MultiFileReader::Create(input.table_function);
-	result->file_list =
-	    std::move(multi_file_reader->CreateFileList(context, input.inputs[0], FileGlobOptions::ALLOW_EMPTY));
+	auto file_list = multi_file_reader->CreateFileList(context, input.inputs[0], FileGlobOptions::ALLOW_EMPTY);
 
 	MultiFileOptions file_options;
 
@@ -75,14 +76,6 @@ static unique_ptr<FunctionData> ReadFileBind(ClientContext &context, TableFuncti
 		throw NotImplementedException("Unimplemented option %s", kv.first);
 	}
 
-	// TODO: Implement lazy listing
-	// if (!file_options.hive_lazy_listing) {
-	// 	result->files = result->file_list->GetAllFiles();
-	// }
-	result->files = result->file_list->GetAllFiles();
-
-	result->file_options = std::move(file_options);
-
 	return_types.push_back(LogicalType::VARCHAR);
 	names.push_back("filename");
 	return_types.push_back(OP::TYPE());
@@ -92,7 +85,40 @@ static unique_ptr<FunctionData> ReadFileBind(ClientContext &context, TableFuncti
 	return_types.push_back(LogicalType::TIMESTAMP_TZ);
 	names.push_back("last_modified");
 
+	// TODO: Implement lazy listing
+	result->files = file_list->GetAllFiles();
+	file_options.AutoDetectHivePartitioning(*file_list, context);
+
+	MultiFileReaderBindData reader_bind_data;
+	multi_file_reader->BindOptions(file_options, *file_list, result->return_types, result->names, reader_bind_data);
+	for (idx_t i = 0; i < result->return_types.size(); i++) {
+		return_types.push_back(result->return_types[i]);
+		names.push_back(result->names[i]);
+	}
+	// TODO: Read hive_partitioning_indexes from reader_bind_data and add to return_types and names
+	// reader_bind_data.hive_partitioning_indexes
+
+	result->file_list = std::move(file_list);
+	result->file_options = std::move(file_options);
+
 	return std::move(result);
+}
+
+//------------------------------------------------------------------------------
+// Optimize
+//------------------------------------------------------------------------------
+
+static void ReadFileComplexFilterPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data_p,
+                                          vector<unique_ptr<Expression>> &filters) {
+	auto &data = bind_data_p->Cast<ReadFileBindData>();
+
+	MultiFilePushdownInfo info(get);
+	auto new_list = data.file_list->ComplexFilterPushdown(context, data.file_options, info, filters);
+
+	if (new_list) {
+		data.files = new_list->GetAllFiles();
+		data.file_list = std::move(new_list);
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -293,6 +319,7 @@ static TableFunction GetFunction() {
 	MultiFileReader::AddParameters(func);
 	func.table_scan_progress = ReadFileProgress;
 	func.cardinality = ReadFileCardinality;
+	func.pushdown_complex_filter = ReadFileComplexFilterPushdown;
 	func.projection_pushdown = true;
 	return func;
 }
