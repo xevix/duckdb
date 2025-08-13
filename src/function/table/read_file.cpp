@@ -42,6 +42,7 @@ struct ReadTextOperation {
 // Bind
 //------------------------------------------------------------------------------
 struct ReadFileBindData : public TableFunctionData {
+	unique_ptr<MultiFileReaderBindData> reader_bind_data;
 	vector<OpenFileInfo> files;
 	shared_ptr<MultiFileList> file_list;
 	MultiFileOptions file_options;
@@ -63,6 +64,7 @@ static unique_ptr<FunctionData> ReadFileBind(ClientContext &context, TableFuncti
 	auto file_list = multi_file_reader->CreateFileList(context, input.inputs[0], FileGlobOptions::ALLOW_EMPTY);
 
 	MultiFileOptions file_options;
+	file_options.filename = false;
 
 	for (auto &kv : input.named_parameters) {
 		auto loption = StringUtil::Lower(kv.first);
@@ -89,17 +91,12 @@ static unique_ptr<FunctionData> ReadFileBind(ClientContext &context, TableFuncti
 	result->files = file_list->GetAllFiles();
 	file_options.AutoDetectHivePartitioning(*file_list, context);
 
-	MultiFileReaderBindData reader_bind_data;
-	multi_file_reader->BindOptions(file_options, *file_list, result->return_types, result->names, reader_bind_data);
-	for (idx_t i = 0; i < result->return_types.size(); i++) {
-		return_types.push_back(result->return_types[i]);
-		names.push_back(result->names[i]);
-	}
-	// TODO: Read hive_partitioning_indexes from reader_bind_data and add to return_types and names
-	// reader_bind_data.hive_partitioning_indexes
+	auto reader_bind_data = make_uniq<MultiFileReaderBindData>();
+	multi_file_reader->BindOptions(file_options, *file_list, return_types, names, *reader_bind_data);
 
 	result->file_list = std::move(file_list);
 	result->file_options = std::move(file_options);
+	result->reader_bind_data = std::move(reader_bind_data);
 
 	return std::move(result);
 }
@@ -270,7 +267,41 @@ static void ReadFileExecute(ClientContext &context, TableFunctionInput &input, D
 					}
 				} break;
 				default:
-					throw InternalException("Unsupported column index for read_file");
+					auto &column_vector = output.data[col_idx];
+					auto partitions = HivePartitioning::Parse(file.path);
+					bool found_partition = false;
+					auto &options = *bind_data.reader_bind_data;
+					auto &file_options = bind_data.file_options;
+					string val;
+					Value value;
+					for (auto &entry : options.hive_partitioning_indexes) {
+						if (proj_idx == entry.index) {
+							val = partitions[entry.value];
+							value = file_options.GetHivePartitionValue(partitions[entry.value], entry.value, context);
+							found_partition = true;
+							break;
+						}
+					}
+					if (found_partition) {
+						switch (value.type().id()) {
+						case LogicalTypeId::DATE: {
+							FlatVector::GetData<date_t>(column_vector)[out_idx] = DateValue::Get(value);
+						} break;
+						case LogicalTypeId::TIMESTAMP: {
+							FlatVector::GetData<timestampt_t>(column_vector)[out_idx] = TimestampValue::Get(value);
+						} break;
+						case LogicalTypeId::BIGINT: {
+							FlatVector::GetData<int64_t>(column_vector)[out_idx] = BigIntValue::Get(value);
+						} break;
+						case LogicalTypeId::VARCHAR: {
+							auto val_string = StringVector::AddString(column_vector, val);
+							FlatVector::GetData<string_t>(column_vector)[out_idx] = val_string;
+						} break;
+						default:
+							throw InternalException("Unsupported column type for read_file");
+						}
+						continue;
+					}
 				}
 			}
 			// Filesystems are not required to support all operations, so we just set the column to NULL if not
