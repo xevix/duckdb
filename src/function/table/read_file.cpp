@@ -288,7 +288,7 @@ static void ReadFileExecute(ClientContext &context, TableFunctionInput &input, D
 							FlatVector::GetData<date_t>(column_vector)[out_idx] = DateValue::Get(value);
 						} break;
 						case LogicalTypeId::TIMESTAMP: {
-							FlatVector::GetData<timestampt_t>(column_vector)[out_idx] = TimestampValue::Get(value);
+							FlatVector::GetData<timestamp_t>(column_vector)[out_idx] = TimestampValue::Get(value);
 						} break;
 						case LogicalTypeId::BIGINT: {
 							FlatVector::GetData<int64_t>(column_vector)[out_idx] = BigIntValue::Get(value);
