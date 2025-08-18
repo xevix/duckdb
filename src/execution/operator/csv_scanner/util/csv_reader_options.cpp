@@ -475,6 +475,7 @@ string CSVReaderOptions::ToString(const string &current_file_path) const {
 	auto &skip_rows = dialect_options.skip_rows;
 
 	auto &header = dialect_options.header;
+	auto &fixed_width = dialect_options.fixed_width;
 	string error = "  file = " + current_file_path + "\n  ";
 	// Let's first print options that can either be set by the user or by the sniffer
 	// delimiter
@@ -487,6 +488,8 @@ string CSVReaderOptions::ToString(const string &current_file_path) const {
 	error += FormatOptionLine("new_line", new_line);
 	// has_header
 	error += FormatOptionLine("header", header);
+	// fixed_width
+	error += FormatOptionLine("fixed_width", fixed_width);
 	// skip_rows
 	error += FormatOptionLine("skip_rows", skip_rows);
 	// comment
@@ -655,7 +658,7 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const string &key, co
 						type = val;
 					} else if (name == "position") {
 						position_present = true;
-						position_list.emplace_back(UBigIntValue::Get(val));
+						position_list.emplace_back(IntegerValue::Get(val));
 					} else {
 						throw BinderException("read_csv columns may only contain type and position, unknown name: " +
 						                      name);

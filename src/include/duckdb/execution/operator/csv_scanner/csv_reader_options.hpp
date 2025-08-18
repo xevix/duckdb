@@ -27,6 +27,8 @@ struct DialectOptions {
 	idx_t num_cols = 0;
 	//! Whether the file has a header line
 	CSVOption<bool> header = false;
+	//! Whether the file has fixed-width columns, instead of separator-based columns
+	CSVOption<bool> fixed_width = false;
 	//! The date format to use (if any is specified)
 	map<LogicalTypeId, CSVOption<StrpTimeFormat>> date_format = {{LogicalTypeId::DATE, {}},
 	                                                             {LogicalTypeId::TIMESTAMP, {}}};

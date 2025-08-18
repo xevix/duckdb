@@ -25,7 +25,7 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
 	auto &state_machine_cache = CSVStateMachineCache::Get(context);
 
 	SetNamesAndTypes(names, types);
-	if (options.auto_detect) {
+	if (options.auto_detect && options.dialect_options.fixed_width == false) {
 		if (fixed_schema) {
 			// schema of the file is fixed - only run the sniffer
 			CSVSniffer sniffer(options, file_options, buffer_manager, state_machine_cache);
