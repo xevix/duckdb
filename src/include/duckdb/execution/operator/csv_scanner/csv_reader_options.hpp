@@ -77,6 +77,8 @@ struct CSVReaderOptions {
 	vector<LogicalType> sql_type_list;
 	//! User-defined name list
 	vector<string> name_list;
+	//! User-defined column position list
+	vector<idx_t> position_list;
 	//! If the names and types were set by the columns parameter
 	bool columns_set = false;
 	//! Types considered as candidates for auto-detection ordered by ascending specificity (~ from low to high)

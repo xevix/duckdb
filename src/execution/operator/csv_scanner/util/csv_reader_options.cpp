@@ -640,12 +640,38 @@ void CSVReaderOptions::ParseOption(ClientContext &context, const string &key, co
 		for (idx_t i = 0; i < struct_children.size(); i++) {
 			auto &name = StructType::GetChildName(child_type, i);
 			auto &val = struct_children[i];
+			Value type;
 			name_list.push_back(name);
-			if (val.type().id() != LogicalTypeId::VARCHAR) {
-				throw BinderException("read_csv requires a type specification as string");
+			if (val.type().id() == LogicalTypeId::STRUCT) {
+				// position and type supplied for fixed-width CSV
+				auto &column_children = StructValue::GetChildren(val);
+				bool type_present = false;
+				bool position_present = false;
+				for (idx_t j = 0; j < column_children.size(); j++) {
+					auto &name = StructType::GetChildName(val.type(), j);
+					auto &val = column_children[j];
+					if (name == "type") {
+						type_present = true;
+						type = val;
+					} else if (name == "position") {
+						position_present = true;
+						position_list.emplace_back(UBigIntValue::Get(val));
+					} else {
+						throw BinderException("read_csv columns may only contain type and position, unknown name: " +
+						                      name);
+					}
+				}
+				if (!(type_present && position_present)) {
+					throw BinderException("read_csv columns require type and position, missing in: " + name);
+				}
+			} else if (val.type().id() == LogicalTypeId::VARCHAR) {
+				// column type passed in as a string
+				type = val;
+			} else {
+				throw BinderException("read_csv requires a type specification as a struct or a string");
 			}
 			sql_types_per_column[name] = i;
-			sql_type_list.emplace_back(TransformStringToLogicalType(StringValue::Get(val), context));
+			sql_type_list.emplace_back(TransformStringToLogicalType(StringValue::Get(type), context));
 		}
 		if (name_list.empty()) {
 			throw BinderException("read_csv requires at least a single column as input!");
