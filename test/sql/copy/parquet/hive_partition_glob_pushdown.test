@@ -1,0 +1,217 @@
+# name: test/sql/copy/parquet/hive_partition_glob_pushdown.test
+# description: Test pushing hive partition filters into the glob, pruning directories during listing
+# group: [parquet]
+
+require parquet
+
+require noforcestorage
+
+statement ok
+CREATE TABLE src AS SELECT repeat(chr((97 + (i // 5) % 26)::INTEGER), 3) AS part_a, i % 5 AS part_b, i AS id FROM range(130) t(i);
+
+statement ok
+COPY src TO '{TEST_DIR}/hive_glob_prune' (FORMAT PARQUET, PARTITION_BY (part_a, part_b));
+
+# filters on both partition columns
+query III
+SELECT part_a, part_b, id FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a = 'ccc' AND part_b = 2 ORDER BY id;
+----
+ccc	2	12
+
+# filter on a single partition column
+query I
+SELECT id FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a = 'ddd' ORDER BY id;
+----
+15
+16
+17
+18
+19
+
+# range filter on a partition column
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a >= 'yyy';
+----
+10
+
+# OR filter over partition values
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a = 'aaa' OR part_a = 'zzz';
+----
+10
+
+# IN filter over partition values
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a IN ('bbb', 'yyy') AND part_b IN (0, 1);
+----
+4
+
+# filter that matches no partition: empty result, no error
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a = 'nope';
+----
+0
+
+# filter on a non-partition column only
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE id < 7;
+----
+7
+
+# mixed partition and data column filters
+query III
+SELECT part_a, part_b, id FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a = 'ccc' AND id > 11 AND id < 14 ORDER BY id;
+----
+ccc	2	12
+ccc	3	13
+
+# filename filter combined with hive partitioning
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1, filename=1) WHERE part_a = 'eee' AND filename LIKE '%part_b=4%';
+----
+1
+
+# the same results with hive partitioning autodetected
+query III
+SELECT part_a, part_b, id FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet') WHERE part_a = 'ccc' AND part_b = 2 ORDER BY id;
+----
+ccc	2	12
+
+# union_by_name still works with hive filters
+query I
+SELECT id FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1, union_by_name=1) WHERE part_a = 'fff' AND part_b = 3 ORDER BY id;
+----
+28
+
+# the filters pushed into the glob are shown in the plan
+query II
+EXPLAIN SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1) WHERE part_a = 'ggg' AND part_b = 1;
+----
+physical_plan	<REGEX>:.*File Filters:.*part_a.*ggg.*
+
+# verify that pruned partition directories are never listed, using glob trace logging
+# hive_types_autocast=0 avoids sampling files for type detection so only the pruned glob lists directories
+statement ok
+SET logging_level='trace';
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1, hive_types_autocast=0) WHERE part_a = 'ccc' AND part_b = 2;
+
+statement ok
+SET enable_logging=false;
+
+# the matching partition directory is listed
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE message LIKE '%listing%part_a=ccc%';
+----
+true
+
+# partition directories beyond the initial sample that do not match the filter are never listed
+query I
+SELECT count(*) FROM duckdb_logs WHERE message LIKE '%listing%part_a=zzz%';
+----
+0
+
+# without a filter, all partition directories are listed
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1, hive_types_autocast=0);
+
+statement ok
+SET enable_logging=false;
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE message LIKE '%listing%part_a=zzz%';
+----
+true
+
+# verify the number of glob traversals through the directory listing logs
+# with single-star globs each directory is listed exactly once per glob traversal
+
+# a non-hive glob is expanded once: every directory is listed exactly once
+statement ok
+COPY src TO '{TEST_DIR}/hive_flat' (FORMAT PARQUET, PER_THREAD_OUTPUT);
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_flat/*.parquet');
+
+statement ok
+SET enable_logging=false;
+
+query I
+SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs WHERE message LIKE '%listing%' GROUP BY message);
+----
+1
+
+# a hive glob over a small number of files is expanded once, even with partition filters
+statement ok
+COPY src TO '{TEST_DIR}/hive_small' (FORMAT PARQUET, PARTITION_BY (part_b));
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_small/*/*.parquet', hive_partitioning=1) WHERE part_b = 2;
+
+statement ok
+SET enable_logging=false;
+
+query I
+SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs WHERE message LIKE '%listing%' GROUP BY message);
+----
+1
+
+# a filtered hive glob over many files is expanded at most twice:
+# once for binding (bounded by the detection sample) and once with the filters pushed into the glob
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/*/*/*.parquet', hive_partitioning=1) WHERE part_a = 'ccc' AND part_b = 2;
+
+statement ok
+SET enable_logging=false;
+
+query I
+SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs WHERE message LIKE '%listing%' GROUP BY message);
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message LIKE '%listing%part_a=zzz%';
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE message LIKE '%listing%hive_glob_prune"%';
+----
+2
+
+# hive filter pushdown into the glob also works for CSV files
+statement ok
+COPY src TO '{TEST_DIR}/hive_glob_prune_csv' (FORMAT CSV, PARTITION_BY (part_a, part_b));
+
+query III
+SELECT part_a, part_b, id FROM read_csv_auto('{TEST_DIR}/hive_glob_prune_csv/**/*.csv', hive_partitioning=1) WHERE part_a = 'ccc' AND part_b = 2 ORDER BY id;
+----
+ccc	2	12

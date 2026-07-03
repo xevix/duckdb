@@ -200,6 +200,12 @@ class GlobMultiFileList : public LazyMultiFileList {
 public:
 	GlobMultiFileList(ClientContext &context, vector<string> globs, FileGlobInput input);
 
+	//! Pushes hive partition/filename filters into the glob itself, so that non-matching directories are
+	//! pruned during glob expansion instead of after expanding the full file list
+	unique_ptr<MultiFileList> ComplexFilterPushdown(ClientContext &context, const MultiFileOptions &options,
+	                                                MultiFilePushdownInfo &info,
+	                                                vector<unique_ptr<Expression>> &filters) const override;
+
 	vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const override;
 
 protected:

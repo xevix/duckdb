@@ -1,0 +1,20 @@
+# name: benchmark/micro/parquet/hive_partition_filtered_glob.benchmark
+# description: Filtered scan over a hive-partitioned glob - filters are pushed into the glob to prune directories
+# group: [parquet]
+
+name Hive Partition Filtered Glob
+group micro
+subgroup parquet
+
+require parquet
+
+load
+CREATE TABLE hive_src AS SELECT i % 100 AS part_a, (i // 100) % 20 AS part_b, i AS id FROM range(20000) t(i);
+SET partitioned_write_max_open_files=10000;
+COPY hive_src TO '${BENCHMARK_DIR}/hive_filtered_glob' (FORMAT PARQUET, PARTITION_BY (part_a, part_b), OVERWRITE_OR_IGNORE);
+
+run
+SELECT count(*), min(id), max(id) FROM parquet_scan('${BENCHMARK_DIR}/hive_filtered_glob/**/*.parquet', hive_partitioning=1) WHERE part_a = 57 AND part_b = 13
+
+result III
+10	1357	19357

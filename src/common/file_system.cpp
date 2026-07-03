@@ -635,6 +635,16 @@ unique_ptr<MultiFileList> FileSystem::Glob(const string &path, const FileGlobInp
                                            optional_ptr<FileOpener> opener) {
 	if (!SupportsGlobExtended()) {
 		auto result = Glob(path, opener.get());
+		if (input.path_filter) {
+			// the file system cannot prune paths during globbing - filter the result instead
+			vector<OpenFileInfo> filtered_result;
+			for (auto &file : result) {
+				if (input.IncludePath(file.path, false)) {
+					filtered_result.push_back(std::move(file));
+				}
+			}
+			result = std::move(filtered_result);
+		}
 		return make_uniq<SimpleMultiFileList>(std::move(result));
 	} else {
 		return GlobFilesExtended(path, input, opener);
@@ -691,7 +701,9 @@ unique_ptr<MultiFileList> FileSystem::GlobFileList(const string &pattern, const 
 				throw InternalException("FALLBACK_GLOB requires an extension to be specified");
 			}
 			string new_pattern = JoinPath(JoinPath(pattern, "**"), "*." + input.extension);
-			result = GlobFileList(new_pattern, FileGlobOptions::ALLOW_EMPTY);
+			FileGlobInput fallback_input(FileGlobOptions::ALLOW_EMPTY);
+			fallback_input.path_filter = input.path_filter;
+			result = GlobFileList(new_pattern, fallback_input);
 			if (!result->IsEmpty()) {
 				// we found files by globbing the target as if it was a directory - return them
 				return result;
