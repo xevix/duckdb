@@ -8,6 +8,7 @@
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 
 #include <algorithm>
 
@@ -26,9 +27,8 @@ MultiFilePushdownInfo::MultiFilePushdownInfo(TableIndex table_index, const vecto
     : table_index(table_index), column_names(column_names), column_ids(column_ids), extra_info(extra_info) {
 }
 
-// Helper method to do Filter Pushdown into a MultiFileList
-bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, MultiFilePushdownInfo &info,
-                      vector<unique_ptr<Expression>> &filters, vector<OpenFileInfo> &expanded_files) {
+static HivePartitioningFilterInfo CreateHivePartitioningFilterInfo(const MultiFileOptions &options,
+                                                                   const MultiFilePushdownInfo &info) {
 	HivePartitioningFilterInfo filter_info;
 	for (idx_t i = 0; i < info.column_ids.size(); i++) {
 		if (IsVirtualColumn(info.column_ids[i])) {
@@ -38,6 +38,13 @@ bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, M
 	}
 	filter_info.hive_enabled = options.hive_partitioning;
 	filter_info.filename_enabled = options.filename;
+	return filter_info;
+}
+
+// Helper method to do Filter Pushdown into a MultiFileList
+bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, MultiFilePushdownInfo &info,
+                      vector<unique_ptr<Expression>> &filters, vector<OpenFileInfo> &expanded_files) {
+	auto filter_info = CreateHivePartitioningFilterInfo(options, info);
 
 	auto start_files = expanded_files.size();
 	HivePartitioning::ApplyFiltersToFileList(context, expanded_files, filters, filter_info, info);
@@ -350,6 +357,88 @@ bool LazyMultiFileList::ExpandNextPathInternal() const {
 GlobMultiFileList::GlobMultiFileList(ClientContext &context_p, vector<string> globs_p, FileGlobInput glob_input_p)
     : LazyMultiFileList(&context_p), context(context_p), globs(std::move(globs_p)), glob_input(std::move(glob_input_p)),
       current_glob(0) {
+}
+
+//! When the glob only matches a few files, filtering the expanded list beats re-globbing with path pruning
+static constexpr idx_t FILE_COUNT_FOR_EAGER_PUSHDOWN = 10;
+
+static void FindReferencedPathColumns(const Expression &expr, const TableIndex &table_index,
+                                      const unordered_set<idx_t> &path_column_ids, bool &has_column_ref,
+                                      bool &only_path_columns) {
+	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+		auto &colref = expr.Cast<BoundColumnRefExpression>();
+		has_column_ref = true;
+		if (colref.Binding().table_index != table_index ||
+		    path_column_ids.find(colref.Binding().column_index) == path_column_ids.end()) {
+			only_path_columns = false;
+		}
+		return;
+	}
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		FindReferencedPathColumns(child, table_index, path_column_ids, has_column_ref, only_path_columns);
+	});
+}
+
+unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext &context_p,
+                                                                   const MultiFileOptions &options,
+                                                                   MultiFilePushdownInfo &info,
+                                                                   vector<unique_ptr<Expression>> &filters) const {
+	if (!options.hive_partitioning && !options.filename) {
+		return nullptr;
+	}
+	if (filters.empty()) {
+		return nullptr;
+	}
+	auto file_count = GetFileCount(FILE_COUNT_FOR_EAGER_PUSHDOWN);
+	if (file_count.type == FileExpansionType::ALL_FILES_EXPANDED) {
+		return MultiFileList::ComplexFilterPushdown(context_p, options, info, filters);
+	}
+	auto filter_info = CreateHivePartitioningFilterInfo(options, info);
+
+	// find the columns that can be resolved from the file path alone
+	// the hive partition columns are bound from the first file, so its path holds all usable hive keys
+	unordered_set<idx_t> path_column_ids;
+	if (options.hive_partitioning) {
+		auto partitions = HivePartitioning::Parse(GetFirstFile().path);
+		for (auto &partition : partitions) {
+			auto entry = filter_info.column_map.find(partition.first);
+			if (entry != filter_info.column_map.end()) {
+				path_column_ids.insert(entry->second);
+			}
+		}
+	}
+	if (options.filename) {
+		auto entry = filter_info.column_map.find("filename");
+		if (entry != filter_info.column_map.end()) {
+			path_column_ids.insert(entry->second);
+		}
+	}
+
+	// gather the filters that reference only path-resolvable columns - these can prune paths during globbing
+	vector<unique_ptr<Expression>> path_filters;
+	string file_filters;
+	for (auto &filter : filters) {
+		bool has_column_ref = false;
+		bool only_path_columns = true;
+		FindReferencedPathColumns(*filter, info.table_index, path_column_ids, has_column_ref, only_path_columns);
+		if (!has_column_ref || !only_path_columns) {
+			continue;
+		}
+		file_filters += filter->ToString();
+		path_filters.push_back(filter->Copy());
+	}
+	if (path_filters.empty()) {
+		// no filters can be pushed into the glob - fall back to filtering the expanded file list
+		return MultiFileList::ComplexFilterPushdown(context_p, options, info, filters);
+	}
+
+	// re-glob with the path filters pushed into the glob, pruning non-matching paths during expansion
+	FileGlobInput pruned_input = glob_input;
+	pruned_input.allow_empty = true;
+	pruned_input.path_filter = make_shared_ptr<HiveGlobPathFilter>(context_p, info.table_index, std::move(filter_info),
+	                                                               std::move(path_filters));
+	info.extra_info.file_filters += file_filters;
+	return make_uniq<GlobMultiFileList>(context_p, globs, std::move(pruned_input));
 }
 
 vector<OpenFileInfo> GlobMultiFileList::GetDisplayFileList(optional_idx max_files) const {

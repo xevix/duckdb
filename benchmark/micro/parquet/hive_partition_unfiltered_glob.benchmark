@@ -1,0 +1,20 @@
+# name: benchmark/micro/parquet/hive_partition_unfiltered_glob.benchmark
+# description: Unfiltered scan over a hive-partitioned glob - baseline for the filtered variant
+# group: [parquet]
+
+name Hive Partition Unfiltered Glob
+group micro
+subgroup parquet
+
+require parquet
+
+load
+CREATE TABLE hive_src AS SELECT i % 100 AS part_a, (i // 100) % 20 AS part_b, i AS id FROM range(20000) t(i);
+SET partitioned_write_max_open_files=10000;
+COPY hive_src TO '${BENCHMARK_DIR}/hive_unfiltered_glob' (FORMAT PARQUET, PARTITION_BY (part_a, part_b), OVERWRITE_OR_IGNORE);
+
+run
+SELECT count(*), min(id), max(id) FROM parquet_scan('${BENCHMARK_DIR}/hive_unfiltered_glob/**/*.parquet', hive_partitioning=1)
+
+result III
+20000	0	19999

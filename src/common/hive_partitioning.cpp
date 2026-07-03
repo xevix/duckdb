@@ -152,6 +152,52 @@ Value HivePartitioning::GetValue(ClientContext &context, const string &key, cons
 	return value;
 }
 
+HiveGlobPathFilter::HiveGlobPathFilter(ClientContext &context, TableIndex table_index,
+                                       HivePartitioningFilterInfo filter_info_p, vector<unique_ptr<Expression>> filters)
+    : context(context), table_index(table_index), filter_info(std::move(filter_info_p)),
+      directory_filter_info(filter_info), filters(std::move(filters)) {
+	// filename filters cannot be evaluated on incomplete (directory) paths
+	directory_filter_info.filename_enabled = false;
+}
+
+bool HiveGlobPathFilter::IncludePath(const string &path, bool is_directory) const {
+	auto parse_path = path;
+	if (is_directory) {
+		// partition values are only recognized when followed by a separator - add one so the final path
+		// component is also considered
+		parse_path += "/";
+	}
+	auto known_values = GetKnownColumnValues(parse_path, is_directory ? directory_filter_info : filter_info);
+	if (known_values.empty()) {
+		return true;
+	}
+	for (auto &filter : filters) {
+		auto filter_copy = filter->Copy();
+		Value result_value;
+		if (is_directory) {
+			// a partition value that cannot be cast to the column type errors when reading files -
+			// for directories we include the path so that only directories that hold matching files can error
+			try {
+				ConvertKnownColRefToConstants(context, filter_copy, known_values, table_index);
+			} catch (...) {
+				return true;
+			}
+		} else {
+			ConvertKnownColRefToConstants(context, filter_copy, known_values, table_index);
+		}
+		if (!filter_copy->IsScalar() || !filter_copy->IsFoldable() ||
+		    !ExpressionExecutor::TryEvaluateScalar(context, *filter_copy, result_value)) {
+			// the filter cannot be evaluated with only the values known from this path - it cannot prune the path
+			continue;
+		}
+		if (result_value.IsNull() || !result_value.GetValue<bool>()) {
+			// filter evaluates to false for this path - exclude it
+			return false;
+		}
+	}
+	return true;
+}
+
 // TODO: this can still be improved by removing the parts of filter expressions that are true for all remaining files.
 //		 currently, only expressions that cannot be evaluated during pushdown are removed.
 void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<OpenFileInfo> &files,

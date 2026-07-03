@@ -223,6 +223,17 @@ bool MultiFileReader::Bind(MultiFileOptions &options, MultiFileList &files, vect
 	return false;
 }
 
+//! Minimum number of files to sample for hive partition scheme verification and partition/type detection
+//! Sampling only looks at the files that are available without fully expanding the file list, so that e.g. large
+//! hive-partitioned globs do not need to be listed completely during binding
+static constexpr idx_t HIVE_DETECTION_MINIMUM_SAMPLE_SIZE = 100;
+
+static void InitializeHiveDetectionScan(MultiFileList &files, MultiFileListScanData &scan_data) {
+	files.GetFileCount(HIVE_DETECTION_MINIMUM_SAMPLE_SIZE);
+	files.InitializeScan(scan_data);
+	scan_data.scan_type = MultiFileListScanType::FETCH_IF_AVAILABLE;
+}
+
 void MultiFileReader::BindOptions(MultiFileOptions &options, MultiFileList &files, vector<LogicalType> &return_types,
                                   vector<Identifier> &names, MultiFileReaderBindData &bind_data) {
 	// Add generated constant column for filename
@@ -241,8 +252,12 @@ void MultiFileReader::BindOptions(MultiFileOptions &options, MultiFileList &file
 	if (options.hive_partitioning) {
 		D_ASSERT(files.GetExpandResult() != FileExpandResult::NO_FILES);
 		auto partitions = HivePartitioning::Parse(files.GetFirstFile().path);
-		// verify that all files have the same hive partitioning scheme
-		for (const auto &file : files.Files()) {
+		// verify that a sample of the files has the same hive partitioning scheme
+		// mismatches beyond the sample are detected when the file itself is read
+		MultiFileListScanData scan_data;
+		InitializeHiveDetectionScan(files, scan_data);
+		OpenFileInfo file;
+		while (files.Scan(scan_data, file)) {
 			auto file_partitions = HivePartitioning::Parse(file.path);
 			for (auto &part_info : partitions) {
 				if (file_partitions.find(part_info.first) == file_partitions.end()) {
@@ -656,15 +671,31 @@ bool MultiFileReader::CanSkipFileFromFilters(ClientContext &context, const OpenF
 }
 
 void MultiFileReader::PruneReaders(MultiFileBindData &data, MultiFileList &file_list) {
-	unordered_set<string> file_set;
-
 	// Avoid materializing the file list if there's nothing to prune
 	if (!data.initial_reader && data.union_readers.empty()) {
 		return;
 	}
 
-	for (const auto &file : file_list.Files()) {
-		file_set.insert(file.path);
+	// gather the files the readers were created for
+	unordered_set<string> requested_files;
+	if (data.initial_reader) {
+		requested_files.insert(data.initial_reader->GetFileName());
+	}
+	for (auto &reader : data.union_readers) {
+		if (reader) {
+			requested_files.insert(reader->GetFileName());
+		}
+	}
+
+	// scan the file list only until all requested files have been found - avoids fully expanding lazy file lists
+	unordered_set<string> file_set;
+	MultiFileListScanData scan_data;
+	file_list.InitializeScan(scan_data);
+	OpenFileInfo file;
+	while (file_set.size() < requested_files.size() && file_list.Scan(scan_data, file)) {
+		if (requested_files.find(file.path) != requested_files.end()) {
+			file_set.insert(file.path);
+		}
 	}
 
 	if (data.initial_reader) {
@@ -736,7 +767,10 @@ bool MultiFileOptions::AutoDetectHivePartitioningInternal(MultiFileList &files, 
 		return false;
 	}
 
-	for (const auto &file : files.Files()) {
+	MultiFileListScanData scan_data;
+	InitializeHiveDetectionScan(files, scan_data);
+	OpenFileInfo file;
+	while (files.Scan(scan_data, file)) {
 		auto new_partitions = HivePartitioning::Parse(file.path);
 		if (new_partitions.size() != partitions.size()) {
 			// partition count mismatch
@@ -756,7 +790,10 @@ void MultiFileOptions::AutoDetectHiveTypesInternal(MultiFileList &files, ClientC
 	const LogicalType candidates[] = {LogicalType::DATE, LogicalType::TIMESTAMP, LogicalType::BIGINT};
 
 	unordered_map<string, LogicalType> detected_types;
-	for (const auto &file : files.Files()) {
+	MultiFileListScanData scan_data;
+	InitializeHiveDetectionScan(files, scan_data);
+	OpenFileInfo file;
+	while (files.Scan(scan_data, file)) {
 		auto partitions = HivePartitioning::Parse(file.path);
 		if (partitions.empty()) {
 			return;
