@@ -15,6 +15,8 @@
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
 #include "duckdb/common/open_file_info.hpp"
+#include "duckdb/common/enums/file_glob_options.hpp"
+#include "duckdb/common/table_index.hpp"
 #include "duckdb/original/std/sstream.hpp"
 
 #include <iostream>
@@ -26,6 +28,25 @@ struct HivePartitioningFilterInfo {
 	unordered_map<string, column_t> column_map;
 	bool hive_enabled;
 	bool filename_enabled;
+};
+
+//! GlobPathFilter that prunes paths during glob expansion using filters on hive partition/filename columns
+//! Excluding a directory at the earliest possible point avoids listing everything below it
+class HiveGlobPathFilter : public GlobPathFilter {
+public:
+	HiveGlobPathFilter(ClientContext &context, TableIndex table_index, HivePartitioningFilterInfo filter_info,
+	                   vector<unique_ptr<Expression>> filters);
+
+	bool IncludePath(const string &path, bool is_directory) const override;
+
+private:
+	ClientContext &context;
+	TableIndex table_index;
+	HivePartitioningFilterInfo filter_info;
+	//! Filter info used for directory paths (filename filters disabled)
+	HivePartitioningFilterInfo directory_filter_info;
+	//! Filters that only reference hive partition/filename columns
+	vector<unique_ptr<Expression>> filters;
 };
 
 class HivePartitioning {

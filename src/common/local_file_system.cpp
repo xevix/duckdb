@@ -14,6 +14,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/logging/file_system_logger.hpp"
 #include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 
 #include <cstdint>
@@ -2074,13 +2075,17 @@ struct ExpandDirectory {
 };
 
 static void CrawlDirectoryLevel(FileSystem &fs, const string &path, optional_ptr<vector<OpenFileInfo>> files,
-                                std::priority_queue<ExpandDirectory> &directories, idx_t split_index) {
+                                std::priority_queue<ExpandDirectory> &directories, idx_t split_index,
+                                const FileGlobInput &input) {
 	fs.ListFiles(path, [&](OpenFileInfo &info) {
 		info.path = fs.JoinPath(path, info.path);
 		if (IsSymbolicLink(info.path)) {
 			return;
 		}
 		bool is_directory = FileSystem::IsDirectory(info);
+		if (!input.IncludePath(info.path, is_directory)) {
+			return;
+		}
 		if (is_directory) {
 			directories.emplace(std::move(info.path), split_index);
 		} else if (files) {
@@ -2090,7 +2095,7 @@ static void CrawlDirectoryLevel(FileSystem &fs, const string &path, optional_ptr
 }
 
 static void GlobFilesInternal(FileSystem &fs, const string &path, const string &glob, bool match_directory,
-                              vector<OpenFileInfo> &result) {
+                              vector<OpenFileInfo> &result, const FileGlobInput &input) {
 	fs.ListFiles(path, [&](OpenFileInfo &info) {
 		bool is_directory = FileSystem::IsDirectory(info);
 		if (is_directory != match_directory) {
@@ -2098,14 +2103,31 @@ static void GlobFilesInternal(FileSystem &fs, const string &path, const string &
 		}
 		if (Glob(info.path.c_str(), info.path.size(), glob.c_str(), glob.size())) {
 			info.path = fs.JoinPath(path, info.path);
+			if (!input.IncludePath(info.path, is_directory)) {
+				return;
+			}
 			result.push_back(std::move(info));
 		}
 	});
 }
 
+static void FilterGlobResults(const FileGlobInput &input, vector<OpenFileInfo> &files) {
+	if (!input.path_filter) {
+		return;
+	}
+	vector<OpenFileInfo> result;
+	for (auto &file : files) {
+		if (input.IncludePath(file.path, false)) {
+			result.push_back(std::move(file));
+		}
+	}
+	files = std::move(result);
+}
+
 struct LocalGlobResult : public LazyMultiFileList {
 public:
-	LocalGlobResult(LocalFileSystem &fs, const string &path, FileGlobOptions options, optional_ptr<FileOpener> opener);
+	LocalGlobResult(LocalFileSystem &fs, const string &path, const FileGlobInput &input,
+	                optional_ptr<FileOpener> opener);
 
 protected:
 	bool ExpandNextPath() const override;
@@ -2113,6 +2135,7 @@ protected:
 private:
 	LocalFileSystem &fs;
 	string path;
+	FileGlobInput glob_input;
 	optional_ptr<FileOpener> opener;
 	vector<PathSplit> splits;
 	bool absolute_path = false;
@@ -2120,10 +2143,10 @@ private:
 	mutable bool finished = false;
 };
 
-LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, FileGlobOptions options_p,
+LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, const FileGlobInput &input,
                                  optional_ptr<FileOpener> opener)
     : LazyMultiFileList(FileOpener::TryGetClientContext(opener)), fs(fs), path(fs.ExpandPath(path_p, opener)),
-      opener(opener) {
+      glob_input(input), opener(opener) {
 	if (path.empty()) {
 		finished = true;
 		return;
@@ -2153,6 +2176,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, File
 			D_ASSERT(path[0] == '~');
 			if (!fs.HasGlob(path)) {
 				expanded_files = fs.FetchFileWithoutGlob(home_directory + path.substr(1), opener, absolute_path);
+				FilterGlobResults(glob_input, expanded_files);
 				finished = true;
 				return;
 			}
@@ -2162,6 +2186,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, File
 	if (!fs.HasGlob(path)) {
 		// no glob: return only the file (if it exists or is a pipe)
 		expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
+		FilterGlobResults(glob_input, expanded_files);
 		finished = true;
 		return;
 	}
@@ -2200,6 +2225,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 			// no result found that matches the glob
 			// last ditch effort: search the path as a string literal
 			expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
+			FilterGlobResults(glob_input, expanded_files);
 		}
 		finished = true;
 		return false;
@@ -2229,37 +2255,45 @@ bool LocalGlobResult::ExpandNextPath() const {
 			if (is_last_component) {
 				// last component - we are emitting a result here
 				auto filename = fs.JoinPath(current_path, next_component);
-				if (fs.FileExists(filename, opener) || fs.DirectoryExists(filename, opener)) {
+				if (glob_input.IncludePath(filename, false) &&
+				    (fs.FileExists(filename, opener) || fs.DirectoryExists(filename, opener))) {
 					expanded_files.emplace_back(std::move(filename));
 				}
 			} else {
 				// not the last component - add the next directory as "to-be-expanded"
-				expand_directories.emplace(fs.JoinPath(current_path, next_component), split_index + 1);
+				auto directory = fs.JoinPath(current_path, next_component);
+				if (glob_input.IncludePath(directory, true)) {
+					expand_directories.emplace(std::move(directory), split_index + 1);
+				}
 			}
 		}
 	} else {
-		// glob - need to resolve the glob
+		// glob - need to resolve the glob by listing the contents of the current path
+		if (context) {
+			DUCKDB_LOG_TRACE(*context, "LocalFileSystem: listing \"%s\" while expanding glob \"%s\"", current_path,
+			                 path);
+		}
 		if (IsCrawl(next_component)) {
 			if (is_last_component) {
 				// the crawl is the last component - we are looking for files in this directory
 				// any directories we encounter are added to the expand directories
-				CrawlDirectoryLevel(fs, current_path, expanded_files, expand_directories, split_index);
+				CrawlDirectoryLevel(fs, current_path, expanded_files, expand_directories, split_index, glob_input);
 			} else {
 				// not the last crawl
 				// ** also matches the current directory (i.e. dir/**/file.parquet also matches dir/file.parquet)
 				expand_directories.emplace(current_path, split_index + 1);
 				// now crawl the contents of this directory - but don't add any files we find
-				CrawlDirectoryLevel(fs, current_path, nullptr, expand_directories, split_index);
+				CrawlDirectoryLevel(fs, current_path, nullptr, expand_directories, split_index, glob_input);
 			}
 		} else {
 			// glob this directory according to the next component
 			if (is_last_component) {
 				// last component - match files and place them in the result
-				GlobFilesInternal(fs, current_path, next_component, false, expanded_files);
+				GlobFilesInternal(fs, current_path, next_component, false, expanded_files, glob_input);
 			} else {
 				// not the last component - match directories and add to expansion list
 				vector<OpenFileInfo> child_directories;
-				GlobFilesInternal(fs, current_path, next_component, true, child_directories);
+				GlobFilesInternal(fs, current_path, next_component, true, child_directories, glob_input);
 				for (auto &file : child_directories) {
 					expand_directories.emplace(std::move(file.path), split_index + 1);
 				}
@@ -2271,7 +2305,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 
 unique_ptr<MultiFileList> LocalFileSystem::GlobFilesExtended(const string &path, const FileGlobInput &input,
                                                              optional_ptr<FileOpener> opener) {
-	return make_uniq<LocalGlobResult>(*this, path, FileGlobOptions::ALLOW_EMPTY, opener);
+	return make_uniq<LocalGlobResult>(*this, path, input, opener);
 }
 
 unique_ptr<FileSystem> FileSystem::CreateLocal() {
