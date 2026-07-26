@@ -55,6 +55,12 @@ public:
 	                                              vector<unique_ptr<Expression>> &filters,
 	                                              const HivePartitioningFilterInfo &filter_info,
 	                                              MultiFilePushdownInfo &info);
+	//! Returns copies of the filters that can be evaluated using only the columns that a path provides
+	//! sample_path is a path that contains all usable hive partition keys (e.g. the first file)
+	DUCKDB_API static vector<unique_ptr<Expression>> ExtractPathFilters(const string &sample_path,
+	                                                                    const HivePartitioningFilterInfo &filter_info,
+	                                                                    TableIndex table_index,
+	                                                                    const vector<unique_ptr<Expression>> &filters);
 
 	DUCKDB_API static Value GetValue(ClientContext &context, const string &key, const string &value,
 	                                 const LogicalType &type);

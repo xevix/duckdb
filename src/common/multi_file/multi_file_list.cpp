@@ -8,7 +8,6 @@
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
 
 #include <algorithm>
 #include "duckdb/main/client_context.hpp"
@@ -88,21 +87,24 @@ bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, c
 //===--------------------------------------------------------------------===//
 // MultiFileListIterator
 //===--------------------------------------------------------------------===//
-MultiFileListIterationHelper MultiFileList::Files() const {
-	return MultiFileListIterationHelper(*this);
+MultiFileListIterationHelper MultiFileList::Files(MultiFileListScanType scan_type) const {
+	return MultiFileListIterationHelper(*this, scan_type);
 }
 
-MultiFileListIterationHelper::MultiFileListIterationHelper(const MultiFileList &file_list_p) : file_list(file_list_p) {
+MultiFileListIterationHelper::MultiFileListIterationHelper(const MultiFileList &file_list_p,
+                                                           MultiFileListScanType scan_type_p)
+    : file_list(file_list_p), scan_type(scan_type_p) {
 }
 
 MultiFileListIterationHelper::MultiFileListIterator::MultiFileListIterator(
-    optional_ptr<const MultiFileList> file_list_p)
+    optional_ptr<const MultiFileList> file_list_p, MultiFileListScanType scan_type)
     : file_list(file_list_p) {
 	if (!file_list) {
 		return;
 	}
 
 	file_list->InitializeScan(file_scan_data);
+	file_scan_data.scan_type = scan_type;
 	if (!file_list->Scan(file_scan_data, current_file)) {
 		// There is no first file: move iterator to nop state
 		file_list = nullptr;
@@ -124,7 +126,7 @@ void MultiFileListIterationHelper::MultiFileListIterator::Next() {
 
 MultiFileListIterationHelper::MultiFileListIterator MultiFileListIterationHelper::begin() { // NOLINT: match stl API
 	return MultiFileListIterationHelper::MultiFileListIterator(
-	    file_list.GetExpandResult() == FileExpandResult::NO_FILES ? nullptr : &file_list);
+	    file_list.GetExpandResult() == FileExpandResult::NO_FILES ? nullptr : &file_list, scan_type);
 }
 MultiFileListIterationHelper::MultiFileListIterator MultiFileListIterationHelper::end() { // NOLINT: match stl API
 	return MultiFileListIterationHelper::MultiFileListIterator(nullptr);
@@ -363,23 +365,6 @@ GlobMultiFileList::GlobMultiFileList(ClientContext &context_p, vector<string> gl
 //! When the glob only matches a few files, filtering the expanded list beats re-globbing with path pruning
 static constexpr idx_t FILE_COUNT_FOR_EAGER_PUSHDOWN = 10;
 
-static void FindReferencedPathColumns(const Expression &expr, const TableIndex &table_index,
-                                      const unordered_set<idx_t> &path_column_ids, bool &has_column_ref,
-                                      bool &only_path_columns) {
-	if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
-		auto &colref = expr.Cast<BoundColumnRefExpression>();
-		has_column_ref = true;
-		if (colref.Binding().table_index != table_index ||
-		    path_column_ids.find(colref.Binding().column_index) == path_column_ids.end()) {
-			only_path_columns = false;
-		}
-		return;
-	}
-	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
-		FindReferencedPathColumns(child, table_index, path_column_ids, has_column_ref, only_path_columns);
-	});
-}
-
 unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext &context_p,
                                                                    const MultiFileOptions &options,
                                                                    MultiFilePushdownInfo &info,
@@ -396,41 +381,16 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
 	}
 	auto filter_info = CreateHivePartitioningFilterInfo(options, info);
 
-	// find the columns that can be resolved from the file path alone
+	// gather the filters that can be evaluated from a path alone - these can prune paths during globbing
 	// the hive partition columns are bound from the first file, so its path holds all usable hive keys
-	unordered_set<idx_t> path_column_ids;
-	if (options.hive_partitioning) {
-		auto partitions = HivePartitioning::Parse(GetFirstFile().path);
-		for (auto &partition : partitions) {
-			auto entry = filter_info.column_map.find(partition.first);
-			if (entry != filter_info.column_map.end()) {
-				path_column_ids.insert(entry->second);
-			}
-		}
-	}
-	if (options.filename) {
-		auto entry = filter_info.column_map.find("filename");
-		if (entry != filter_info.column_map.end()) {
-			path_column_ids.insert(entry->second);
-		}
-	}
-
-	// gather the filters that reference only path-resolvable columns - these can prune paths during globbing
-	vector<unique_ptr<Expression>> path_filters;
-	string file_filters;
-	for (auto &filter : filters) {
-		bool has_column_ref = false;
-		bool only_path_columns = true;
-		FindReferencedPathColumns(*filter, info.table_index, path_column_ids, has_column_ref, only_path_columns);
-		if (!has_column_ref || !only_path_columns) {
-			continue;
-		}
-		file_filters += filter->ToString();
-		path_filters.push_back(filter->Copy());
-	}
+	auto path_filters =
+	    HivePartitioning::ExtractPathFilters(GetFirstFile().path, filter_info, info.table_index, filters);
 	if (path_filters.empty()) {
 		// no filters can be pushed into the glob - fall back to filtering the expanded file list
 		return MultiFileList::ComplexFilterPushdown(context_p, options, info, filters);
+	}
+	for (auto &filter : path_filters) {
+		info.extra_info.file_filters += filter->ToString();
 	}
 
 	// re-glob with the path filters pushed into the glob, pruning non-matching paths during expansion
@@ -438,7 +398,6 @@ unique_ptr<MultiFileList> GlobMultiFileList::ComplexFilterPushdown(ClientContext
 	pruned_input.allow_empty = true;
 	pruned_input.path_filter = make_shared_ptr<HiveGlobPathFilter>(context_p, info.table_index, std::move(filter_info),
 	                                                               std::move(path_filters));
-	info.extra_info.file_filters += file_filters;
 	return make_uniq<GlobMultiFileList>(context_p, globs, std::move(pruned_input));
 }
 

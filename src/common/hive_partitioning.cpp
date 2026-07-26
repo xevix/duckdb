@@ -213,6 +213,30 @@ bool HiveGlobPathFilter::IncludePath(const string &path, bool is_directory) cons
 	return true;
 }
 
+vector<unique_ptr<Expression>> HivePartitioning::ExtractPathFilters(const string &sample_path,
+                                                                    const HivePartitioningFilterInfo &filter_info,
+                                                                    TableIndex table_index,
+                                                                    const vector<unique_ptr<Expression>> &filters) {
+	auto known_values = GetKnownColumnValues(sample_path, filter_info);
+	vector<unique_ptr<Expression>> result;
+	for (auto &filter : filters) {
+		bool has_column_ref = false;
+		bool only_path_columns = true;
+		ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+		    *filter, [&](const BoundColumnRefExpression &colref) {
+			    has_column_ref = true;
+			    if (colref.Binding().table_index != table_index ||
+			        known_values.find(colref.Binding().column_index) == known_values.end()) {
+				    only_path_columns = false;
+			    }
+		    });
+		if (has_column_ref && only_path_columns) {
+			result.push_back(filter->Copy());
+		}
+	}
+	return result;
+}
+
 // TODO: this can still be improved by removing the parts of filter expressions that are true for all remaining files.
 //		 currently, only expressions that cannot be evaluated during pushdown are removed.
 void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<OpenFileInfo> &files,

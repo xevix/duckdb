@@ -2089,6 +2089,10 @@ protected:
 	bool ExpandNextPath() const override;
 
 private:
+	//! Expand to the single file the path points at (if any), applying the path filter
+	void FetchFileWithoutGlob(const string &file_path) const;
+
+private:
 	LocalFileSystem &fs;
 	string path;
 	FileGlobInput glob_input;
@@ -2098,6 +2102,11 @@ private:
 	mutable std::priority_queue<ExpandDirectory> expand_directories;
 	mutable bool finished = false;
 };
+
+void LocalGlobResult::FetchFileWithoutGlob(const string &file_path) const {
+	expanded_files = fs.FetchFileWithoutGlob(file_path, opener, absolute_path);
+	FileSystem::FilterGlobFiles(glob_input, expanded_files);
+}
 
 LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, const FileGlobInput &input,
                                  optional_ptr<FileOpener> opener)
@@ -2131,8 +2140,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 			splits[0].path = home_directory;
 			D_ASSERT(path[0] == '~');
 			if (!fs.HasGlob(path)) {
-				expanded_files = fs.FetchFileWithoutGlob(home_directory + path.substr(1), opener, absolute_path);
-				FileSystem::FilterGlobFiles(glob_input, expanded_files);
+				FetchFileWithoutGlob(home_directory + path.substr(1));
 				finished = true;
 				return;
 			}
@@ -2141,8 +2149,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 	// Check if the path has a glob at all
 	if (!fs.HasGlob(path)) {
 		// no glob: return only the file (if it exists or is a pipe)
-		expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
-		FileSystem::FilterGlobFiles(glob_input, expanded_files);
+		FetchFileWithoutGlob(path);
 		finished = true;
 		return;
 	}
@@ -2180,8 +2187,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 		if (expanded_files.empty()) {
 			// no result found that matches the glob
 			// last ditch effort: search the path as a string literal
-			expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
-			FileSystem::FilterGlobFiles(glob_input, expanded_files);
+			FetchFileWithoutGlob(path);
 		}
 		finished = true;
 		return false;
@@ -2226,8 +2232,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 	} else {
 		// glob - need to resolve the glob by listing the contents of the current path
 		if (context) {
-			DUCKDB_LOG_TRACE(*context, "LocalFileSystem: listing \"%s\" while expanding glob \"%s\"", current_path,
-			                 path);
+			DUCKDB_LOG_FILE_SYSTEM_LIST(*context, fs, current_path);
 		}
 		if (IsCrawl(next_component)) {
 			if (is_last_component) {

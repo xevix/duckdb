@@ -89,13 +89,10 @@ EXPLAIN SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parqu
 ----
 physical_plan	<REGEX>:.*File Filters:.*part_a.*ggg.*
 
-# verify that pruned partition directories are never listed, using glob trace logging
+# verify that pruned partition directories are never listed, using the file system LIST logs
 # hive_types_autocast=0 avoids sampling files for type detection so only the pruned glob lists directories
 statement ok
-SET logging_level='trace';
-
-statement ok
-SET enable_logging=true;
+CALL enable_logging('FileSystem');
 
 statement ok
 SELECT count(*) FROM parquet_scan('{TEST_DIR}/hive_glob_prune/**/*.parquet', hive_partitioning=1, hive_types_autocast=0) WHERE part_a = 'ccc' AND part_b = 2;
@@ -105,13 +102,13 @@ SET enable_logging=false;
 
 # the matching partition directory is listed
 query I
-SELECT count(*) > 0 FROM duckdb_logs WHERE message LIKE '%listing%part_a=ccc%';
+SELECT count(*) > 0 FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' AND path LIKE '%part_a=ccc%';
 ----
 true
 
 # partition directories beyond the initial sample that do not match the filter are never listed
 query I
-SELECT count(*) FROM duckdb_logs WHERE message LIKE '%listing%part_a=zzz%';
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' AND path LIKE '%part_a=zzz%';
 ----
 0
 
@@ -129,7 +126,7 @@ statement ok
 SET enable_logging=false;
 
 query I
-SELECT count(*) > 0 FROM duckdb_logs WHERE message LIKE '%listing%part_a=zzz%';
+SELECT count(*) > 0 FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' AND path LIKE '%part_a=zzz%';
 ----
 true
 
@@ -153,7 +150,7 @@ statement ok
 SET enable_logging=false;
 
 query I
-SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs WHERE message LIKE '%listing%' GROUP BY message);
+SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' GROUP BY path);
 ----
 1
 
@@ -174,7 +171,7 @@ statement ok
 SET enable_logging=false;
 
 query I
-SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs WHERE message LIKE '%listing%' GROUP BY message);
+SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' GROUP BY path);
 ----
 1
 
@@ -193,17 +190,17 @@ statement ok
 SET enable_logging=false;
 
 query I
-SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs WHERE message LIKE '%listing%' GROUP BY message);
+SELECT coalesce(max(cnt), 0) FROM (SELECT count(*) cnt FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' GROUP BY path);
 ----
 2
 
 query I
-SELECT count(*) FROM duckdb_logs WHERE message LIKE '%listing%part_a=zzz%';
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' AND path LIKE '%part_a=zzz%';
 ----
 0
 
 query I
-SELECT count(*) FROM duckdb_logs WHERE message LIKE '%listing%hive_glob_prune"%';
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'LIST' AND path LIKE '%hive_glob_prune';
 ----
 2
 

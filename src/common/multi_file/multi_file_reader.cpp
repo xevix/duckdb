@@ -229,10 +229,9 @@ bool MultiFileReader::Bind(MultiFileOptions &options, MultiFileList &files, vect
 //! hive-partitioned globs do not need to be listed completely during binding
 static constexpr idx_t HIVE_DETECTION_MINIMUM_SAMPLE_SIZE = 100;
 
-static void InitializeHiveDetectionScan(MultiFileList &files, MultiFileListScanData &scan_data) {
+static MultiFileListIterationHelper HiveDetectionSample(MultiFileList &files) {
 	files.GetFileCount(HIVE_DETECTION_MINIMUM_SAMPLE_SIZE);
-	files.InitializeScan(scan_data);
-	scan_data.scan_type = MultiFileListScanType::FETCH_IF_AVAILABLE;
+	return files.Files(MultiFileListScanType::FETCH_IF_AVAILABLE);
 }
 
 void MultiFileReader::BindOptions(MultiFileOptions &options, MultiFileList &files, vector<LogicalType> &return_types,
@@ -255,10 +254,7 @@ void MultiFileReader::BindOptions(MultiFileOptions &options, MultiFileList &file
 		auto partitions = HivePartitioning::Parse(files.GetFirstFile().path);
 		// verify that a sample of the files has the same hive partitioning scheme
 		// mismatches beyond the sample are detected when the file itself is read
-		MultiFileListScanData scan_data;
-		InitializeHiveDetectionScan(files, scan_data);
-		OpenFileInfo file;
-		while (files.Scan(scan_data, file)) {
+		for (const auto &file : HiveDetectionSample(files)) {
 			auto file_partitions = HivePartitioning::Parse(file.path);
 			for (auto &part_info : partitions) {
 				if (file_partitions.find(part_info.first) == file_partitions.end()) {
@@ -768,10 +764,7 @@ bool MultiFileOptions::AutoDetectHivePartitioningInternal(MultiFileList &files, 
 		return false;
 	}
 
-	MultiFileListScanData scan_data;
-	InitializeHiveDetectionScan(files, scan_data);
-	OpenFileInfo file;
-	while (files.Scan(scan_data, file)) {
+	for (const auto &file : HiveDetectionSample(files)) {
 		auto new_partitions = HivePartitioning::Parse(file.path);
 		if (new_partitions.size() != partitions.size()) {
 			// partition count mismatch
@@ -791,10 +784,7 @@ void MultiFileOptions::AutoDetectHiveTypesInternal(MultiFileList &files, ClientC
 	const LogicalType candidates[] = {LogicalType::DATE, LogicalType::TIMESTAMP, LogicalType::BIGINT};
 
 	unordered_map<string, LogicalType> detected_types;
-	MultiFileListScanData scan_data;
-	InitializeHiveDetectionScan(files, scan_data);
-	OpenFileInfo file;
-	while (files.Scan(scan_data, file)) {
+	for (const auto &file : HiveDetectionSample(files)) {
 		auto partitions = HivePartitioning::Parse(file.path);
 		if (partitions.empty()) {
 			return;

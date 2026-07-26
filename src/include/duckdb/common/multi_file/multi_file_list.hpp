@@ -42,17 +42,21 @@ struct MultiFileCount {
 
 class MultiFileListIterationHelper {
 public:
-	DUCKDB_API explicit MultiFileListIterationHelper(const MultiFileList &collection);
+	DUCKDB_API explicit MultiFileListIterationHelper(
+	    const MultiFileList &collection, MultiFileListScanType scan_type = MultiFileListScanType::ALWAYS_FETCH);
 
 private:
 	const MultiFileList &file_list;
+	MultiFileListScanType scan_type;
 
 private:
 	class MultiFileListIterator;
 
 	class MultiFileListIterator {
 	public:
-		DUCKDB_API explicit MultiFileListIterator(optional_ptr<const MultiFileList> file_list);
+		DUCKDB_API explicit MultiFileListIterator(
+		    optional_ptr<const MultiFileList> file_list,
+		    MultiFileListScanType scan_type = MultiFileListScanType::ALWAYS_FETCH);
 
 		optional_ptr<const MultiFileList> file_list;
 		MultiFileListScanData file_scan_data;
@@ -91,7 +95,8 @@ public:
 	virtual ~MultiFileList();
 
 	//! Get Iterator over the files for pretty for loops
-	MultiFileListIterationHelper Files() const;
+	//! FETCH_IF_AVAILABLE stops at the first file that is not expanded yet instead of expanding the entire list
+	MultiFileListIterationHelper Files(MultiFileListScanType scan_type = MultiFileListScanType::ALWAYS_FETCH) const;
 
 	//! Initialize a sequential scan over a file list
 	void InitializeScan(MultiFileListScanData &iterator) const;
