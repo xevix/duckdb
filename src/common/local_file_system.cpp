@@ -2080,19 +2080,6 @@ static void GlobFilesInternal(FileSystem &fs, const string &path, const string &
 	});
 }
 
-static void FilterGlobResults(const FileGlobInput &input, vector<OpenFileInfo> &files) {
-	if (!input.path_filter) {
-		return;
-	}
-	vector<OpenFileInfo> result;
-	for (auto &file : files) {
-		if (input.IncludePath(file.path, false)) {
-			result.push_back(std::move(file));
-		}
-	}
-	files = std::move(result);
-}
-
 struct LocalGlobResult : public LazyMultiFileList {
 public:
 	LocalGlobResult(LocalFileSystem &fs, const string &path, const FileGlobInput &input,
@@ -2145,7 +2132,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 			D_ASSERT(path[0] == '~');
 			if (!fs.HasGlob(path)) {
 				expanded_files = fs.FetchFileWithoutGlob(home_directory + path.substr(1), opener, absolute_path);
-				FilterGlobResults(glob_input, expanded_files);
+				FileSystem::FilterGlobFiles(glob_input, expanded_files);
 				finished = true;
 				return;
 			}
@@ -2155,7 +2142,7 @@ LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, cons
 	if (!fs.HasGlob(path)) {
 		// no glob: return only the file (if it exists or is a pipe)
 		expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
-		FilterGlobResults(glob_input, expanded_files);
+		FileSystem::FilterGlobFiles(glob_input, expanded_files);
 		finished = true;
 		return;
 	}
@@ -2194,7 +2181,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 			// no result found that matches the glob
 			// last ditch effort: search the path as a string literal
 			expanded_files = fs.FetchFileWithoutGlob(path, opener, absolute_path);
-			FilterGlobResults(glob_input, expanded_files);
+			FileSystem::FilterGlobFiles(glob_input, expanded_files);
 		}
 		finished = true;
 		return false;

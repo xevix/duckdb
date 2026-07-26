@@ -153,6 +153,27 @@ Value HivePartitioning::GetValue(ClientContext &context, const string &key, cons
 	return value;
 }
 
+//! Result of evaluating a filter using only the column values known from a path
+enum class PathFilterResult : uint8_t { CANNOT_EVALUATE, MATCH, NO_MATCH };
+
+static PathFilterResult
+EvaluateFilterAgainstPath(ClientContext &context, const Expression &filter,
+                          const unordered_map<ProjectionIndex, PartitioningColumnValue> &known_values,
+                          TableIndex table_index) {
+	auto filter_copy = filter.Copy();
+	ConvertKnownColRefToConstants(context, filter_copy, known_values, table_index);
+	Value result_value;
+	if (!filter_copy->IsScalar() || !filter_copy->IsFoldable() ||
+	    !ExpressionExecutor::TryEvaluateScalar(context, *filter_copy, result_value)) {
+		// the filter cannot be evaluated with only the filename/hive columns
+		return PathFilterResult::CANNOT_EVALUATE;
+	}
+	if (result_value.IsNull() || !result_value.GetValue<bool>()) {
+		return PathFilterResult::NO_MATCH;
+	}
+	return PathFilterResult::MATCH;
+}
+
 HiveGlobPathFilter::HiveGlobPathFilter(ClientContext &context, TableIndex table_index,
                                        HivePartitioningFilterInfo filter_info_p, vector<unique_ptr<Expression>> filters)
     : context(context), table_index(table_index), filter_info(std::move(filter_info_p)),
@@ -173,26 +194,19 @@ bool HiveGlobPathFilter::IncludePath(const string &path, bool is_directory) cons
 		return true;
 	}
 	for (auto &filter : filters) {
-		auto filter_copy = filter->Copy();
-		Value result_value;
+		PathFilterResult result;
 		if (is_directory) {
 			// a partition value that cannot be cast to the column type errors when reading files -
-			// for directories we include the path so that only directories that hold matching files can error
+			// for directories we skip the filter so that only directories that hold matching files can error
 			try {
-				ConvertKnownColRefToConstants(context, filter_copy, known_values, table_index);
+				result = EvaluateFilterAgainstPath(context, *filter, known_values, table_index);
 			} catch (...) {
-				return true;
+				continue;
 			}
 		} else {
-			ConvertKnownColRefToConstants(context, filter_copy, known_values, table_index);
+			result = EvaluateFilterAgainstPath(context, *filter, known_values, table_index);
 		}
-		if (!filter_copy->IsScalar() || !filter_copy->IsFoldable() ||
-		    !ExpressionExecutor::TryEvaluateScalar(context, *filter_copy, result_value)) {
-			// the filter cannot be evaluated with only the values known from this path - it cannot prune the path
-			continue;
-		}
-		if (result_value.IsNull() || !result_value.GetValue<bool>()) {
-			// filter evaluates to false for this path - exclude it
+		if (result == PathFilterResult::NO_MATCH) {
 			return false;
 		}
 	}
@@ -222,19 +236,15 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 
 		for (idx_t j = 0; j < filters.size(); j++) {
 			auto &filter = filters[j];
-			unique_ptr<Expression> filter_copy = filter->Copy();
-			ConvertKnownColRefToConstants(context, filter_copy, known_values, table_index);
-			// Evaluate the filter, if it can be evaluated here, we can not prune this filter
-			Value result_value;
-
-			if (!filter_copy->IsScalar() || !filter_copy->IsFoldable() ||
-			    !ExpressionExecutor::TryEvaluateScalar(context, *filter_copy, result_value)) {
+			switch (EvaluateFilterAgainstPath(context, *filter, known_values, table_index)) {
+			case PathFilterResult::CANNOT_EVALUATE:
 				// can not be evaluated only with the filename/hive columns added, we can not prune this filter
 				if (!have_preserved_filter[j]) {
 					pruned_filters.emplace_back(filter->Copy());
 					have_preserved_filter[j] = true;
 				}
-			} else if (result_value.IsNull() || !result_value.GetValue<bool>()) {
+				break;
+			case PathFilterResult::NO_MATCH:
 				// filter evaluates to false
 				should_prune_file = true;
 				// convert the filter to a table filter.
@@ -242,6 +252,9 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 					info.extra_info.file_filters += filter->ToString();
 					filters_applied_to_files.insert(j);
 				}
+				break;
+			case PathFilterResult::MATCH:
+				break;
 			}
 		}
 

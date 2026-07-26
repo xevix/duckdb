@@ -278,6 +278,8 @@ public:
 
 	//! Whether there is a glob in the string
 	DUCKDB_API static bool HasGlob(const string &str);
+	//! Removes the files that are excluded by the glob input's path filter (if any)
+	DUCKDB_API static void FilterGlobFiles(const FileGlobInput &input, vector<OpenFileInfo> &files);
 	//! Runs a glob on the file system, returning a list of matching files
 	DUCKDB_API virtual vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr);
 	DUCKDB_API unique_ptr<MultiFileList> Glob(const string &path, const FileGlobInput &input,

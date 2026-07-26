@@ -631,20 +631,25 @@ vector<OpenFileInfo> FileSystem::Glob(const string &path, FileOpener *opener) {
 	throw NotImplementedException("%s: Glob is not implemented!", GetName());
 }
 
+void FileSystem::FilterGlobFiles(const FileGlobInput &input, vector<OpenFileInfo> &files) {
+	if (!input.path_filter) {
+		return;
+	}
+	vector<OpenFileInfo> result;
+	for (auto &file : files) {
+		if (input.IncludePath(file.path, false)) {
+			result.push_back(std::move(file));
+		}
+	}
+	files = std::move(result);
+}
+
 unique_ptr<MultiFileList> FileSystem::Glob(const string &path, const FileGlobInput &input,
                                            optional_ptr<FileOpener> opener) {
 	if (!SupportsGlobExtended()) {
 		auto result = Glob(path, opener.get());
-		if (input.path_filter) {
-			// the file system cannot prune paths during globbing - filter the result instead
-			vector<OpenFileInfo> filtered_result;
-			for (auto &file : result) {
-				if (input.IncludePath(file.path, false)) {
-					filtered_result.push_back(std::move(file));
-				}
-			}
-			result = std::move(filtered_result);
-		}
+		// the file system cannot prune paths during globbing - filter the result instead
+		FilterGlobFiles(input, result);
 		return make_uniq<SimpleMultiFileList>(std::move(result));
 	} else {
 		return GlobFilesExtended(path, input, opener);
