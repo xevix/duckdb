@@ -281,8 +281,12 @@ static void ParquetScanSerialize(Serializer &serializer, const optional_ptr<Func
 	auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
 	auto &parquet_data = bind_data.bind_data->Cast<ParquetReadBindData>();
 
+	// the plan signature of the common subplan optimizer serializes operators only to obtain an identity for them
+	// expanding the file list here can be very expensive - the unexpanded globs identify the scan just as well
+	auto file_list = serializer.ShouldExpandFileLists() ? bind_data.file_list->GetAllFiles()
+	                                                    : bind_data.file_list->GetDisplayFileList();
 	vector<string> files;
-	for (auto &file : bind_data.file_list->GetAllFiles()) {
+	for (auto &file : file_list) {
 		files.emplace_back(file.path);
 	}
 	serializer.WriteProperty(100, "files", files);

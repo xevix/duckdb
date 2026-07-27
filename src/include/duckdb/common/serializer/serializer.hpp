@@ -34,6 +34,10 @@ public:
 
 	bool serialize_enum_as_string = false;
 	bool serialize_default_values = false;
+	//! Whether a lazily expanded file list must be written out as the files it resolves to. When false the definition
+	//! of the list (e.g. the globs) may be written instead, which avoids expanding the list just to serialize it.
+	//! Only safe when the result is not deserialized back into a plan - i.e. when it is used as an identity.
+	bool expand_file_lists = true;
 	StorageCompatibility storage_compatibility = StorageCompatibility::Default();
 };
 
@@ -52,6 +56,10 @@ public:
 
 	bool ShouldSerialize(StorageVersion version_added) const {
 		return ShouldSerializeInternal(version_added);
+	}
+
+	bool ShouldExpandFileLists() const {
+		return options.expand_file_lists;
 	}
 
 	class List {

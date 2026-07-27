@@ -393,8 +393,17 @@ private:
 class PlanSignatureCreateState {
 public:
 	explicit PlanSignatureCreateState(ClientContext &context)
-	    : stream(DEFAULT_BLOCK_ALLOC_SIZE), serializer(stream), allocator(BufferAllocator::Get(context)),
-	      table_index_map(allocator) {
+	    : stream(DEFAULT_BLOCK_ALLOC_SIZE), serializer(stream, SignatureSerializationOptions()),
+	      allocator(BufferAllocator::Get(context)), table_index_map(allocator) {
+	}
+
+private:
+	//! The serialized bytes are only used as an identity for the operator - they are never deserialized, so file lists
+	//! do not need to be expanded to the files they resolve to
+	static SerializationOptions SignatureSerializationOptions() {
+		SerializationOptions options;
+		options.expand_file_lists = false;
+		return options;
 	}
 
 public:
