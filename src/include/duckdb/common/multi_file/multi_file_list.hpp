@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/multi_file/multi_file_options.hpp"
+#include "duckdb/common/multi_file/multi_file_path_filter.hpp"
 #include "duckdb/common/extra_operator_info.hpp"
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/column_index.hpp"
@@ -115,6 +116,8 @@ public:
 	                                                        TableFilterSet &filters) const;
 
 	virtual vector<OpenFileInfo> GetAllFiles() const = 0;
+	//! Get up to "max_files" files - as opposed to GetAllFiles this never expands the entire list
+	vector<OpenFileInfo> GetSampleFiles(idx_t max_files) const;
 	virtual FileExpandResult GetExpandResult() const = 0;
 	//! Get the total file count - forces all files to be expanded / known so the exact count can be computed
 	virtual idx_t GetTotalFileCount() const = 0;
@@ -126,11 +129,27 @@ public:
 	virtual unique_ptr<NodeStatistics> GetCardinality(ClientContext &context) const;
 	virtual unique_ptr<MultiFileList> Copy() const;
 
+	//! Set the filter used to skip paths while the list is expanded - lists that expand paths lazily can use this to
+	//! avoid listing directories that can never contain a matching file
+	virtual void SetPathFilter(shared_ptr<MultiFilePathFilter> filter) const;
+
 protected:
 	//! Whether or not the file at the index is available instantly - or if this requires additional I/O
 	virtual bool FileIsAvailable(idx_t i) const;
 	//! Get the i-th expanded file
 	virtual OpenFileInfo GetFile(idx_t i) const = 0;
+	//! Whether or not the given path can be skipped according to the path filter
+	bool PathIsPruned(const string &path) const;
+	//! Creates a path filter for the given hive/filename filters and installs it - returns the installed filter, or
+	//! nullptr if the filters can never be used to prune paths
+	shared_ptr<HivePathFilter> InstallHivePathFilter(ClientContext &context,
+	                                                 const HivePartitioningFilterInfo &filter_info,
+	                                                 TableIndex table_index,
+	                                                 const vector<unique_ptr<Expression>> &filters) const;
+
+protected:
+	//! The path filter - only affects which paths are expanded, hence it can be set on a const file list
+	mutable shared_ptr<MultiFilePathFilter> path_filter;
 
 public:
 	template <class TARGET>
@@ -201,6 +220,7 @@ public:
 	GlobMultiFileList(ClientContext &context, vector<string> globs, FileGlobInput input);
 
 	vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const override;
+	void SetPathFilter(shared_ptr<MultiFilePathFilter> filter) const override;
 
 protected:
 	bool ExpandNextPath() const override;

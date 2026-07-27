@@ -29,6 +29,11 @@ struct MultiFileOptions {
 
 	case_insensitive_map_t<LogicalType> hive_types_schema;
 
+	// The number of files that is inspected to verify and auto-detect the hive partitioning scheme
+	// Binding only looks at a sample: expanding the entire file list here would defeat any filter pushdown that can
+	// prune (and hence never list) entire directories afterwards
+	static constexpr idx_t HIVE_BIND_SAMPLE_SIZE = 100;
+
 	// Default/configurable name of the column containing the file names
 	static constexpr const char *DEFAULT_FILENAME_COLUMN = "filename";
 	string filename_column = DEFAULT_FILENAME_COLUMN;

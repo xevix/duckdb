@@ -28,20 +28,11 @@ MultiFilePushdownInfo::MultiFilePushdownInfo(TableIndex table_index, const vecto
 }
 
 // Helper method to do Filter Pushdown into a MultiFileList
-bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, MultiFilePushdownInfo &info,
-                      vector<unique_ptr<Expression>> &filters, vector<OpenFileInfo> &expanded_files) {
-	HivePartitioningFilterInfo filter_info;
-	for (idx_t i = 0; i < info.column_ids.size(); i++) {
-		if (IsVirtualColumn(info.column_ids[i])) {
-			continue;
-		}
-		filter_info.column_map.insert({info.column_names[info.column_ids[i]].GetIdentifierName(), i});
-	}
-	filter_info.hive_enabled = options.hive_partitioning;
-	filter_info.filename_enabled = options.filename;
-
+bool PushdownInternal(ClientContext &context, MultiFilePushdownInfo &info,
+                      const HivePartitioningFilterInfo &filter_info, vector<unique_ptr<Expression>> &filters,
+                      vector<OpenFileInfo> &expanded_files, optional_ptr<HivePathFilter> path_filter) {
 	auto start_files = expanded_files.size();
-	HivePartitioning::ApplyFiltersToFileList(context, expanded_files, filters, filter_info, info);
+	HivePartitioning::ApplyFiltersToFileList(context, expanded_files, filters, filter_info, info, path_filter);
 
 	if (expanded_files.size() != start_files) {
 		return true;
@@ -50,16 +41,10 @@ bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, M
 	return false;
 }
 
-bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, const vector<Identifier> &names,
-                      const vector<LogicalType> &types, const vector<column_t> &column_ids,
-                      const TableFilterSet &filters, vector<OpenFileInfo> &expanded_files) {
-	TableIndex table_index(0);
-	ExtraOperatorInfo extra_info;
-
-	// construct the pushdown info
-	MultiFilePushdownInfo info(table_index, names, column_ids, extra_info);
-
-	// construct the set of expressions from the table filters
+// Converts a set of table filters into the expressions that the hive/filename pushdown operates on
+vector<unique_ptr<Expression>> ExpressionsFromTableFilters(const vector<LogicalType> &types,
+                                                           const vector<column_t> &column_ids,
+                                                           const TableFilterSet &filters, TableIndex table_index) {
 	vector<unique_ptr<Expression>> filter_expressions;
 	for (auto &entry : filters) {
 		auto filter_idx = entry.GetIndex();
@@ -73,9 +58,7 @@ bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, c
 		auto filter_expr = expr_filter.ToExpression(*column_ref);
 		filter_expressions.push_back(std::move(filter_expr));
 	}
-
-	// call the original PushdownInternal method
-	return PushdownInternal(context, options, info, filter_expressions, expanded_files);
+	return filter_expressions;
 }
 
 //===--------------------------------------------------------------------===//
@@ -164,6 +147,18 @@ vector<OpenFileInfo> MultiFileList::GetDisplayFileList(optional_idx max_files) c
 	return files;
 }
 
+vector<OpenFileInfo> MultiFileList::GetSampleFiles(idx_t max_files) const {
+	vector<OpenFileInfo> files;
+	for (idx_t i = 0; i < max_files; i++) {
+		auto file = GetFile(i);
+		if (file.path.empty()) {
+			break;
+		}
+		files.push_back(std::move(file));
+	}
+	return files;
+}
+
 MultiFileCount MultiFileList::GetFileCount(idx_t min_exact_count) const {
 	return MultiFileCount(GetTotalFileCount());
 }
@@ -186,16 +181,30 @@ bool MultiFileList::Scan(MultiFileListScanData &iterator, OpenFileInfo &result_f
 	return true;
 }
 
+shared_ptr<HivePathFilter> MultiFileList::InstallHivePathFilter(ClientContext &context,
+                                                                const HivePartitioningFilterInfo &filter_info,
+                                                                TableIndex table_index,
+                                                                const vector<unique_ptr<Expression>> &filters) const {
+	auto hive_path_filter = HivePartitioning::CreatePathFilter(context, filters, filter_info, table_index);
+	if (hive_path_filter) {
+		SetPathFilter(hive_path_filter);
+	}
+	return hive_path_filter;
+}
+
 unique_ptr<MultiFileList> MultiFileList::ComplexFilterPushdown(ClientContext &context, const MultiFileOptions &options,
                                                                MultiFilePushdownInfo &info,
                                                                vector<unique_ptr<Expression>> &filters) const {
 	if (!options.hive_partitioning && !options.filename) {
 		return nullptr;
 	}
+	auto filter_info = HivePartitioning::GetFilterInfo(options, info);
+	// install the path filter before expanding - this way directories that can never match are never listed
+	auto path_filter = InstallHivePathFilter(context, filter_info, info.table_index, filters);
 
 	// FIXME: don't copy list until first file is filtered
 	auto file_copy = GetAllFiles();
-	auto res = PushdownInternal(context, options, info, filters, file_copy);
+	auto res = PushdownInternal(context, info, filter_info, filters, file_copy, path_filter);
 	if (res) {
 		return make_uniq<SimpleMultiFileList>(std::move(file_copy));
 	}
@@ -210,15 +219,32 @@ unique_ptr<MultiFileList> MultiFileList::DynamicFilterPushdown(ClientContext &co
 	if (!options.hive_partitioning && !options.filename) {
 		return nullptr;
 	}
+	TableIndex table_index(0);
+	ExtraOperatorInfo extra_info;
+
+	// construct the pushdown info and the set of expressions from the table filters
+	MultiFilePushdownInfo info(table_index, names, column_ids, extra_info);
+	auto filter_expressions = ExpressionsFromTableFilters(types, column_ids, filters, table_index);
+
+	auto filter_info = HivePartitioning::GetFilterInfo(options, info);
+	auto path_filter = InstallHivePathFilter(context, filter_info, table_index, filter_expressions);
 
 	// FIXME: don't copy list until first file is filtered
 	auto file_copy = GetAllFiles();
-	auto res = PushdownInternal(context, options, names, types, column_ids, filters, file_copy);
+	auto res = PushdownInternal(context, info, filter_info, filter_expressions, file_copy, path_filter);
 	if (res) {
 		return make_uniq<SimpleMultiFileList>(std::move(file_copy));
 	}
 
 	return nullptr;
+}
+
+void MultiFileList::SetPathFilter(shared_ptr<MultiFilePathFilter> filter) const {
+	path_filter = std::move(filter);
+}
+
+bool MultiFileList::PathIsPruned(const string &path) const {
+	return path_filter && path_filter->PrunePath(path);
 }
 
 unique_ptr<NodeStatistics> MultiFileList::GetCardinality(ClientContext &context) const {
@@ -365,6 +391,15 @@ vector<OpenFileInfo> GlobMultiFileList::GetDisplayFileList(optional_idx max_file
 	return result;
 }
 
+void GlobMultiFileList::SetPathFilter(shared_ptr<MultiFilePathFilter> filter) const {
+	lock_guard<mutex> lck(lock);
+	// the globs are expanded by the underlying file lists - they do the actual pruning
+	for (auto &file_list : file_lists) {
+		file_list->SetPathFilter(filter);
+	}
+	MultiFileList::SetPathFilter(std::move(filter));
+}
+
 bool GlobMultiFileList::ExpandNextPath() const {
 	if (current_glob >= globs.size()) {
 		return false;
@@ -373,6 +408,7 @@ bool GlobMultiFileList::ExpandNextPath() const {
 		// glob is not yet started for this file - start it and initiate the scan over this file
 		auto &fs = FileSystem::GetFileSystem(context);
 		auto glob_result = fs.GlobFileList(globs[current_glob], glob_input);
+		glob_result->SetPathFilter(path_filter);
 		scan_state = MultiFileListScanData();
 		glob_result->InitializeScan(scan_state);
 		file_lists.push_back(std::move(glob_result));

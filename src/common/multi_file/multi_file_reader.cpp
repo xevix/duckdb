@@ -242,8 +242,8 @@ void MultiFileReader::BindOptions(MultiFileOptions &options, MultiFileList &file
 	if (options.hive_partitioning) {
 		D_ASSERT(files.GetExpandResult() != FileExpandResult::NO_FILES);
 		auto partitions = HivePartitioning::Parse(files.GetFirstFile().path);
-		// verify that all files have the same hive partitioning scheme
-		for (const auto &file : files.Files()) {
+		// verify that the sampled files have the same hive partitioning scheme
+		for (const auto &file : files.GetSampleFiles(MultiFileOptions::HIVE_BIND_SAMPLE_SIZE)) {
 			auto file_partitions = HivePartitioning::Parse(file.path);
 			for (auto &part_info : partitions) {
 				if (file_partitions.find(part_info.first) == file_partitions.end()) {
@@ -737,7 +737,7 @@ bool MultiFileOptions::AutoDetectHivePartitioningInternal(MultiFileList &files, 
 		return false;
 	}
 
-	for (const auto &file : files.Files()) {
+	for (const auto &file : files.GetSampleFiles(HIVE_BIND_SAMPLE_SIZE)) {
 		auto new_partitions = HivePartitioning::Parse(file.path);
 		if (new_partitions.size() != partitions.size()) {
 			// partition count mismatch
@@ -757,7 +757,7 @@ void MultiFileOptions::AutoDetectHiveTypesInternal(MultiFileList &files, ClientC
 	const LogicalType candidates[] = {LogicalType::DATE, LogicalType::TIMESTAMP, LogicalType::BIGINT};
 
 	unordered_map<string, LogicalType> detected_types;
-	for (const auto &file : files.Files()) {
+	for (const auto &file : files.GetSampleFiles(HIVE_BIND_SAMPLE_SIZE)) {
 		auto partitions = HivePartitioning::Parse(file.path);
 		if (partitions.empty()) {
 			return;

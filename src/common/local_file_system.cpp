@@ -2180,6 +2180,11 @@ bool LocalGlobResult::ExpandNextPath() const {
 	auto &current_path = next_dir.path;
 	expand_directories.pop();
 
+	if (!is_empty && PathIsPruned(current_path)) {
+		// no file below this directory can match - skip it entirely instead of listing its contents
+		return true;
+	}
+
 	auto &next_split = splits[split_index];
 	bool is_last_component = split_index + 1 == splits.size();
 	auto &next_component = next_split.path;

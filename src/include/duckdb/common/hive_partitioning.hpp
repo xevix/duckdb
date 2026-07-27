@@ -9,12 +9,15 @@
 #pragma once
 
 #include "duckdb/common/types/column/partitioned_column_data.hpp"
+#include "duckdb/common/multi_file/multi_file_path_filter.hpp"
 #include "duckdb/common/open_file_info.hpp"
+#include "duckdb/common/table_index.hpp"
 #include "duckdb/original/std/sstream.hpp"
 
 #include <iostream>
 
 namespace duckdb {
+struct MultiFileOptions;
 struct MultiFilePushdownInfo;
 
 struct HivePartitioningFilterInfo {
@@ -23,17 +26,52 @@ struct HivePartitioningFilterInfo {
 	bool filename_enabled;
 };
 
+//! Prunes paths for which the filters can be evaluated to false using only the hive partition keys (and filename)
+//! found in the path itself. Because a hive partition key of a directory also applies to every file below it, this can
+//! be used to skip entire directories while a file list is being expanded.
+class HivePathFilter : public MultiFilePathFilter {
+public:
+	HivePathFilter(ClientContext &context, const vector<unique_ptr<Expression>> &filters,
+	               HivePartitioningFilterInfo filter_info, TableIndex table_index);
+
+	bool PrunePath(const string &path) override;
+
+	//! The filters (by index) that have been used to prune paths so far
+	const unordered_set<idx_t> &GetPruningFilters() const {
+		return pruning_filters;
+	}
+
+private:
+	ClientContext &context;
+	//! Copies of the filters - the filters of the pushdown are modified while we are pruning
+	vector<unique_ptr<Expression>> filters;
+	HivePartitioningFilterInfo filter_info;
+	TableIndex table_index;
+	mutex lock;
+	unordered_set<idx_t> pruning_filters;
+};
+
 class HivePartitioning {
 public:
 	//! Parse a filename that follows the hive partitioning scheme
 	DUCKDB_API static std::map<string, string> Parse(const string &filename);
+	//! Construct the filter info describing which columns can be obtained from the path of a file
+	DUCKDB_API static HivePartitioningFilterInfo GetFilterInfo(const MultiFileOptions &options,
+	                                                           const MultiFilePushdownInfo &info);
+	//! Creates a filter that prunes paths using the hive partition keys they contain - returns nullptr if the filters
+	//! can never be used to prune paths
+	DUCKDB_API static shared_ptr<HivePathFilter> CreatePathFilter(ClientContext &context,
+	                                                              const vector<unique_ptr<Expression>> &filters,
+	                                                              const HivePartitioningFilterInfo &filter_info,
+	                                                              TableIndex table_index);
 	//! Prunes a list of filenames based on a set of filters, can be used by TableFunctions in the
 	//! pushdown_complex_filter function to skip files with filename-based filters. Also removes the filters that always
-	//! evaluate to true.
+	//! evaluate to true. Filters that already pruned paths through "path_filter" are reported as file filters as well.
 	DUCKDB_API static void ApplyFiltersToFileList(ClientContext &context, vector<OpenFileInfo> &files,
 	                                              vector<unique_ptr<Expression>> &filters,
 	                                              const HivePartitioningFilterInfo &filter_info,
-	                                              MultiFilePushdownInfo &info);
+	                                              MultiFilePushdownInfo &info,
+	                                              optional_ptr<HivePathFilter> path_filter = nullptr);
 
 	DUCKDB_API static Value GetValue(ClientContext &context, const string &key, const string &value,
 	                                 const LogicalType &type);
