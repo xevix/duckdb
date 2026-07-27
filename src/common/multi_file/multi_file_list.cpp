@@ -198,6 +198,10 @@ unique_ptr<MultiFileList> MultiFileList::ComplexFilterPushdown(ClientContext &co
 	if (!options.hive_partitioning && !options.filename) {
 		return nullptr;
 	}
+	if (filters.empty()) {
+		// nothing to push down - expanding here would only prevent a later pushdown from pruning paths
+		return nullptr;
+	}
 	auto filter_info = HivePartitioning::GetFilterInfo(options, info);
 	// install the path filter before expanding - this way directories that can never match are never listed
 	auto path_filter = InstallHivePathFilter(context, filter_info, info.table_index, filters);
@@ -225,6 +229,9 @@ unique_ptr<MultiFileList> MultiFileList::DynamicFilterPushdown(ClientContext &co
 	// construct the pushdown info and the set of expressions from the table filters
 	MultiFilePushdownInfo info(table_index, names, column_ids, extra_info);
 	auto filter_expressions = ExpressionsFromTableFilters(types, column_ids, filters, table_index);
+	if (filter_expressions.empty()) {
+		return nullptr;
+	}
 
 	auto filter_info = HivePartitioning::GetFilterInfo(options, info);
 	auto path_filter = InstallHivePathFilter(context, filter_info, table_index, filter_expressions);
