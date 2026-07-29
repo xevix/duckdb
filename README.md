@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center"> 
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="logo/DuckDB_Logo-horizontal.svg">
     <source media="(prefers-color-scheme: dark)" srcset="logo/DuckDB_Logo-horizontal-dark-mode.svg">
