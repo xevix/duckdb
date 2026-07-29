@@ -126,7 +126,7 @@ void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &ca
 		throw InterruptException();
 	}
 	if (context.IsInterrupted()) {
-	        throw InterruptException();
+		throw InterruptException();
 	}
 	if (OptimizerDisabled(type)) {
 		// optimizer is marked as disabled: skip
