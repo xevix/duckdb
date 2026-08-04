@@ -95,21 +95,26 @@ public:
 	}
 
 	static bool IsEmptyResult(const MultiFileBindData &bind_data) {
-		return bind_data.file_options.allow_empty && bind_data.file_list->IsEmpty();
+		if (!bind_data.file_list->IsEmpty()) {
+			return false;
+		}
+		// an empty materialized list is a legitimately empty scan, the same as an empty glob
+		// when the user asked for allow_empty
+		return bind_data.file_options.allow_empty || bind_data.materialized_file_list;
 	}
 
-	static unique_ptr<FunctionData> MultiFileBindInternal(ClientContext &context,
-	                                                      unique_ptr<MultiFileReader> multi_file_reader_p,
-	                                                      shared_ptr<MultiFileList> multi_file_list_p,
-	                                                      vector<LogicalType> &return_types, vector<string> &names,
-	                                                      MultiFileOptions file_options_p,
-	                                                      unique_ptr<BaseFileReaderOptions> options_p,
-	                                                      unique_ptr<MultiFileReaderInterface> interface_p) {
+	static unique_ptr<FunctionData>
+	MultiFileBindInternal(ClientContext &context, unique_ptr<MultiFileReader> multi_file_reader_p,
+	                      shared_ptr<MultiFileList> multi_file_list_p, vector<LogicalType> &return_types,
+	                      vector<string> &names, MultiFileOptions file_options_p,
+	                      unique_ptr<BaseFileReaderOptions> options_p, unique_ptr<MultiFileReaderInterface> interface_p,
+	                      bool materialized_file_list = false) {
 		auto &interface = *interface_p;
 
 		auto result = make_uniq<MultiFileBindData>();
 		result->multi_file_reader = std::move(multi_file_reader_p);
 		result->file_list = std::move(multi_file_list_p);
+		result->materialized_file_list = materialized_file_list;
 		// auto-detect hive partitioning
 		result->file_options = std::move(file_options_p);
 		result->bind_data = interface.InitializeBindData(*result, std::move(options_p));
@@ -1095,10 +1100,13 @@ public:
 	                                                       optional_ptr<FunctionData> bind_data_p) {
 		auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
 		virtual_column_map_t result;
+		// the base virtual columns are registered even for an empty result - a plan may reference
+		// them (e.g. COLUMN_IDENTIFIER_EMPTY for a COUNT(*)) without any file being read
+		MultiFileReader::GetVirtualColumns(context, bind_data.reader_bind, result);
 		if (IsEmptyResult(bind_data)) {
+			bind_data.virtual_columns = result;
 			return result;
 		}
-		MultiFileReader::GetVirtualColumns(context, bind_data.reader_bind, result);
 
 		bind_data.interface->GetVirtualColumns(context, bind_data, result);
 

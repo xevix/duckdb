@@ -84,6 +84,9 @@ struct MultiFileBindData : public TableFunctionData {
 	vector<LogicalType> types;
 	vector<Identifier> names;
 	virtual_column_map_t virtual_columns;
+	//! Whether the file list is materialized rather than a glob - a materialized list that is
+	//! empty is a legitimately empty scan, not a glob that failed to match
+	bool materialized_file_list = false;
 	//! Table column names - set when using COPY tbl FROM file.parquet
 	vector<string> table_columns;
 	shared_ptr<BaseFileReader> initial_reader;

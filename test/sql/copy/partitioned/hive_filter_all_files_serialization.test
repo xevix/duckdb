@@ -1,0 +1,60 @@
+# name: test/sql/copy/partitioned/hive_filter_all_files_serialization.test
+# description: Test plan serialization when filter pushdown removes every file from the scan
+# group: [partitioned]
+
+require parquet
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement ok
+COPY (SELECT i AS k, i AS val FROM range(0,4) tbl(i)) TO '{TEST_DIR}/filter_all_files' (FORMAT PARQUET, PARTITION_BY (k));
+
+# COUNT(*) projects no real column, so the plan references the empty virtual column
+
+query I
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', HIVE_PARTITIONING=1) WHERE k = 1000;
+----
+0
+
+query I
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', HIVE_PARTITIONING=1, ALLOW_EMPTY=true) WHERE k = 1000;
+----
+0
+
+# projections that reference real columns
+
+query II
+SELECT * FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', HIVE_PARTITIONING=1) WHERE k = 1000;
+----
+
+query I
+SELECT COUNT(val) FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', HIVE_PARTITIONING=1) WHERE k = 1000;
+----
+0
+
+# the file list is emptied by a filter on the filename rather than a hive partition
+
+query I
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', FILENAME=1) WHERE filename LIKE '%no_such_file%';
+----
+0
+
+query I
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', FILENAME=1, ALLOW_EMPTY=true) WHERE filename LIKE '%no_such_file%';
+----
+0
+
+# a filter that keeps a subset of the files still works
+
+query I
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/filter_all_files/**/*.parquet', HIVE_PARTITIONING=1) WHERE k = 1;
+----
+1
+
+# a glob that matches no files at all must still raise
+
+statement error
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/no_such_dir/**/*.parquet');
+----
+<REGEX>:IO Error.*No files found.*

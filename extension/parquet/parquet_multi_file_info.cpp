@@ -317,7 +317,10 @@ static unique_ptr<FunctionData> ParquetScanDeserialize(Deserializer &deserialize
 		file_path.emplace_back(path);
 	}
 	FileGlobInput input(FileGlobOptions::FALLBACK_GLOB, "parquet");
-	input.allow_empty = serialization.file_options.allow_empty;
+	// the serialized file list is materialized rather than a glob - an empty list means filter
+	// pushdown removed every file, not that the glob failed to match. A non-empty list that
+	// expands to nothing is still an error.
+	input.allow_empty = serialization.file_options.allow_empty || files.empty();
 
 	auto multi_file_reader = MultiFileReader::Create(function);
 	auto file_list = multi_file_reader->CreateFileList(context, Value::LIST(LogicalType::VARCHAR, file_path), input);
@@ -325,7 +328,7 @@ static unique_ptr<FunctionData> ParquetScanDeserialize(Deserializer &deserialize
 	auto interface = make_uniq<ParquetMultiFileInfo>();
 	auto bind_data = MultiFileFunction<ParquetMultiFileInfo>::MultiFileBindInternal(
 	    context, std::move(multi_file_reader), std::move(file_list), types, names,
-	    std::move(serialization.file_options), std::move(parquet_options), std::move(interface));
+	    std::move(serialization.file_options), std::move(parquet_options), std::move(interface), true);
 	auto &inner_bind_data = bind_data->Cast<MultiFileBindData>();
 	inner_bind_data.table_columns = std::move(table_columns);
 	auto &parquet_bind_data = inner_bind_data.bind_data->Cast<ParquetReadBindData>();
