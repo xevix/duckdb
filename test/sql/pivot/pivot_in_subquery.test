@@ -58,3 +58,83 @@ statement error
 PIVOT Cities ON Year IN (SELECT xx FROM Cities) USING SUM(Population);
 ----
 <REGEX>:Binder Error.*Referenced column.*not found.*
+
+# the IN subquery can reference the CTEs that are in scope
+query IIIII rowsort
+WITH cte AS (SELECT * FROM Cities)
+PIVOT cte ON Year IN (SELECT Year FROM cte) USING SUM(Population);
+----
+NL	Amsterdam	1005	1065	1158
+US	New York City	8015	8175	8772
+US	Seattle	564	608	738
+
+# the CTE is only referenced by the IN subquery, not by the pivot source
+query IIII rowsort
+WITH years AS (SELECT Year FROM Cities WHERE Year <> 2010)
+PIVOT Cities ON Year IN (SELECT Year FROM years ORDER BY Year DESC) USING SUM(Population);
+----
+NL	Amsterdam	1158	1005
+US	New York City	8772	8015
+US	Seattle	738	564
+
+# a CTE that references another CTE
+query IIII rowsort
+WITH base AS (SELECT * FROM Cities), recent AS (SELECT Year FROM base WHERE Year >= 2010)
+PIVOT Cities ON Year IN (SELECT Year FROM recent ORDER BY Year) USING SUM(Population);
+----
+NL	Amsterdam	1065	1158
+US	New York City	8175	8772
+US	Seattle	608	738
+
+# a CTE defined inside the IN subquery shadows the outer one
+query III rowsort
+WITH y AS (SELECT 2000 AS Year)
+PIVOT Cities ON Year IN (WITH y AS (SELECT 2020 AS Year) SELECT Year FROM y) USING SUM(Population);
+----
+NL	Amsterdam	1158
+US	New York City	8772
+US	Seattle	738
+
+# recursive CTE in the IN subquery
+query IIII rowsort
+WITH RECURSIVE y(Year) AS (SELECT 2000 UNION ALL SELECT Year + 10 FROM y WHERE Year < 2010)
+PIVOT Cities ON Year IN (SELECT Year FROM y ORDER BY Year) USING SUM(Population);
+----
+NL	Amsterdam	1005	1065
+US	New York City	8015	8175
+US	Seattle	564	608
+
+# the pivot values are materialized in a separate statement, so a data-modifying CTE must not be
+# copied into the IN subquery - otherwise it would run twice
+statement ok
+CREATE TABLE dml_log(v INTEGER);
+
+statement ok
+WITH d AS (INSERT INTO dml_log VALUES (1) RETURNING *)
+PIVOT Cities ON Year IN (SELECT Year FROM Cities) USING SUM(Population);
+
+query I
+SELECT count(*) FROM dml_log;
+----
+1
+
+# ... and referencing it from the IN subquery is rejected rather than run twice
+statement error
+WITH d AS (INSERT INTO dml_log VALUES (2) RETURNING *)
+PIVOT Cities ON Year IN (SELECT v FROM d) USING SUM(Population);
+----
+<REGEX>:Catalog Error.*d.*does not exist.*
+
+query I
+SELECT count(*) FROM dml_log;
+----
+1
+
+# UNPIVOT resolves CTEs through the same path
+query IIII rowsort
+WITH cte AS (SELECT * FROM Cities WHERE Name = 'Seattle')
+UNPIVOT (SELECT Name, Year, Population FROM cte) ON Population;
+----
+Seattle	2000	Population	564
+Seattle	2010	Population	608
+Seattle	2020	Population	738

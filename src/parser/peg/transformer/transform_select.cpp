@@ -48,14 +48,31 @@ PEGTransformerFactory::TransformSelectStatement(PEGTransformer &transformer,
 	return std::move(select_statement_internal);
 }
 
+//! Keeps a CTE scope on the transformer while the statement it belongs to is being transformed. The scope holds a
+//! reference to the map, so it has to be removed again before that map goes out of scope.
+struct CTEScope {
+	CTEScope(PEGTransformer &transformer, CommonTableExpressionMap &cte_map)
+	    : transformer(transformer), pushed(!cte_map.map.empty()) {
+		if (pushed) {
+			transformer.stored_cte_map.push_back(cte_map);
+		}
+	}
+	~CTEScope() {
+		if (pushed) {
+			transformer.stored_cte_map.pop_back();
+		}
+	}
+
+	PEGTransformer &transformer;
+	bool pushed;
+};
+
 unique_ptr<SelectStatement> PEGTransformerFactory::TransformSelectStatementInternalRule(PEGTransformer &transformer,
                                                                                         ParseResult &parse_result) {
 	auto &list_pr = parse_result.Cast<ListParseResult>();
 	CommonTableExpressionMap cte_map;
 	transformer.TransformOptional<CommonTableExpressionMap>(list_pr, 0, cte_map);
-	if (!cte_map.map.empty()) {
-		transformer.stored_cte_map.push_back(cte_map);
-	}
+	CTEScope cte_scope(transformer, cte_map);
 	auto select_statement = transformer.Transform<unique_ptr<SelectStatement>>(list_pr.Child<ListParseResult>(1));
 
 	if (!cte_map.map.empty()) {
@@ -123,6 +140,11 @@ PEGTransformerFactory::FinalizeSelectStatementInternalTrampoline(PEGTransformer 
 		frame.manual_state = 1;
 		PushSelectStatementInternalRemainder(stack, frame);
 		return nullptr;
+	}
+
+	// the body has been transformed - remove the scope again before the result it references is taken
+	if (frame.child_results[0] && !frame.GetResult<CommonTableExpressionMap>(0).map.empty()) {
+		transformer.stored_cte_map.pop_back();
 	}
 
 	CommonTableExpressionMap cte_map;

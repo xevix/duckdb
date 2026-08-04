@@ -270,7 +270,9 @@ public:
 	unique_ptr<SQLStatement> CreatePivotStatement(unique_ptr<SQLStatement> statement);
 	unique_ptr<SQLStatement> GenerateCreateEnumStmt(unique_ptr<CreatePivotEntry> entry);
 	void PivotEntryCheck(const string &type);
-	void ExtractCTEsRecursive(CommonTableExpressionMap &cte_map);
+	//! Copies the CTEs that are in scope into cte_map. Data-modifying CTEs are skipped when skip_side_effecting is
+	//! set, as those are executed even when they are never referenced.
+	void ExtractCTEsRecursive(CommonTableExpressionMap &cte_map, bool skip_side_effecting = false);
 	bool IsWindowFrameDefault(WindowBoundary start, WindowBoundary end);
 	unique_ptr<WindowExpression> GetWindowClause(const Identifier &window_name);
 	void SetQueryLocation(ParsedExpression &expr, QueryLocation query_location);

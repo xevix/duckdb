@@ -18,6 +18,34 @@ void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string en
 	transformer.pivot_entries.push_back(std::move(result));
 }
 
+//! Registers the queries that materialize the pivot values of each column that has no explicit IN list
+static void AddPivotEnumEntries(PEGTransformer &transformer, vector<PivotColumn> &columns, TableRef &source,
+                                bool has_parameters) {
+	for (auto &col : columns) {
+		if (!col.pivot_enum.empty() || !col.entries.empty()) {
+			continue;
+		}
+		if (col.pivot_expressions.size() != 1) {
+			throw InternalException("PIVOT statement with multiple names in pivot entry!?");
+		}
+		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
+
+		unique_ptr<SelectNode> base;
+		if (col.subquery) {
+			// the IN subquery is used as-is instead of a generated query over the source - it still has to be able
+			// to reference the CTEs that are in scope
+			transformer.ExtractCTEsRecursive(col.subquery->cte_map, true);
+		} else {
+			base = make_uniq<SelectNode>();
+			transformer.ExtractCTEsRecursive(base->cte_map);
+			base->from_table = source.Copy();
+		}
+		PEGTransformerFactory::AddPivotEntry(transformer, enum_name, std::move(base), col.pivot_expressions[0]->Copy(),
+		                                     std::move(col.subquery), has_parameters);
+		col.pivot_enum = Identifier(enum_name);
+	}
+}
+
 vector<PivotColumn> PEGTransformerFactory::TransformPivotOn(PEGTransformer &transformer,
                                                             vector<PivotColumn> pivot_column_list) {
 	return pivot_column_list;
@@ -107,23 +135,7 @@ unique_ptr<SelectStatement> PEGTransformerFactory::TransformPivotStatement(PEGTr
 		return result;
 	}
 	auto columns = transformer.Transform<vector<PivotColumn>>(pivot_columns.GetResult());
-	for (idx_t c = 0; c < columns.size(); c++) {
-		auto &col = columns[c];
-		if (!col.pivot_enum.empty() || !col.entries.empty()) {
-			continue;
-		}
-		if (col.pivot_expressions.size() != 1) {
-			throw InternalException("PIVOT statement with multiple names in pivot entry!?");
-		}
-		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
-
-		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
-		new_select->from_table = source->Copy();
-		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
-		              std::move(col.subquery), has_parameters);
-		col.pivot_enum = Identifier(enum_name);
-	}
+	AddPivotEnumEntries(transformer, columns, *source, has_parameters);
 
 	// Generate the actual query, including the pivot
 	select_node->select_list.push_back(make_uniq<StarExpression>());
@@ -220,23 +232,7 @@ unique_ptr<TransformResultValue> PEGTransformerFactory::FinalizePivotStatementTr
 		return make_uniq<TypedTransformResult<unique_ptr<SelectStatement>>>(std::move(result));
 	}
 	auto columns = frame.TakeResult<vector<PivotColumn>>(1);
-	for (idx_t c = 0; c < columns.size(); c++) {
-		auto &col = columns[c];
-		if (!col.pivot_enum.empty() || !col.entries.empty()) {
-			continue;
-		}
-		if (col.pivot_expressions.size() != 1) {
-			throw InternalException("PIVOT statement with multiple names in pivot entry!?");
-		}
-		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
-
-		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
-		new_select->from_table = source->Copy();
-		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
-		              std::move(col.subquery), has_parameters);
-		col.pivot_enum = Identifier(enum_name);
-	}
+	AddPivotEnumEntries(transformer, columns, *source, has_parameters);
 
 	select_node->select_list.push_back(make_uniq<StarExpression>());
 	auto pivot_ref = make_uniq<PivotRef>();
@@ -323,23 +319,7 @@ unique_ptr<SelectStatement> PEGTransformerFactory::TransformUnpivotStatement(PEG
 		columns.push_back(std::move(col));
 	}
 
-	for (idx_t c = 0; c < columns.size(); c++) {
-		auto &col = columns[c];
-		if (!col.pivot_enum.empty() || !col.entries.empty()) {
-			continue;
-		}
-		if (col.pivot_expressions.size() != 1) {
-			throw InternalException("PIVOT statement with multiple names in pivot entry!?");
-		}
-		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
-
-		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
-		new_select->from_table = source->Copy();
-		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
-		              std::move(col.subquery), has_parameters);
-		col.pivot_enum = Identifier(enum_name);
-	}
+	AddPivotEnumEntries(transformer, columns, *source, has_parameters);
 
 	auto pivot_ref = make_uniq<PivotRef>();
 	pivot_ref->source = std::move(source);
@@ -416,23 +396,7 @@ unique_ptr<TransformResultValue> PEGTransformerFactory::FinalizeUnpivotStatement
 		columns.push_back(std::move(col));
 	}
 
-	for (idx_t c = 0; c < columns.size(); c++) {
-		auto &col = columns[c];
-		if (!col.pivot_enum.empty() || !col.entries.empty()) {
-			continue;
-		}
-		if (col.pivot_expressions.size() != 1) {
-			throw InternalException("PIVOT statement with multiple names in pivot entry!?");
-		}
-		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
-
-		auto new_select = make_uniq<SelectNode>();
-		transformer.ExtractCTEsRecursive(new_select->cte_map);
-		new_select->from_table = source->Copy();
-		AddPivotEntry(transformer, enum_name, std::move(new_select), col.pivot_expressions[0]->Copy(),
-		              std::move(col.subquery), has_parameters);
-		col.pivot_enum = Identifier(enum_name);
-	}
+	AddPivotEnumEntries(transformer, columns, *source, has_parameters);
 
 	auto pivot_ref = make_uniq<PivotRef>();
 	pivot_ref->source = std::move(source);
