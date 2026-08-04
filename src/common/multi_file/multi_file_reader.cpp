@@ -67,6 +67,7 @@ unique_ptr<FunctionData> MultiFileBindData::Copy() const {
 	result->types = types;
 	result->names = names;
 	result->virtual_columns = virtual_columns;
+	result->materialized_file_list = materialized_file_list;
 	result->table_columns = table_columns;
 	return std::move(result);
 }
