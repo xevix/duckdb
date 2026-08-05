@@ -691,7 +691,9 @@ unique_ptr<MultiFileList> FileSystem::GlobFileList(const string &pattern, const 
 				throw InternalException("FALLBACK_GLOB requires an extension to be specified");
 			}
 			string new_pattern = JoinPath(JoinPath(pattern, "**"), "*." + input.extension);
-			result = GlobFileList(new_pattern, FileGlobOptions::ALLOW_EMPTY);
+			FileGlobInput fallback_input(FileGlobOptions::ALLOW_EMPTY);
+			fallback_input.path_filter = input.path_filter;
+			result = GlobFileList(new_pattern, fallback_input);
 			if (!result->IsEmpty()) {
 				// we found files by globbing the target as if it was a directory - return them
 				return result;

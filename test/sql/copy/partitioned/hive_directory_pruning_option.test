@@ -112,12 +112,9 @@ statement ok
 COPY (SELECT 1 AS k, 0 AS val) TO '{TEST_DIR}/hive_pruning_option_mixed' (FORMAT PARQUET, PARTITION_BY (k));
 
 # fill the partition directory past the bind sample, so the plain file below is only reached by a full expansion
-loop i 0 150
-
+# one row group is written per file, so this yields 101 files of 2048 rows each
 statement ok
-COPY (SELECT {i} AS val) TO '{TEST_DIR}/hive_pruning_option_mixed/k=1/f{i}.parquet' (FORMAT PARQUET);
-
-endloop
+COPY (SELECT i AS val FROM range(0,101*2048) tbl(i)) TO '{TEST_DIR}/hive_pruning_option_mixed/k=1' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, ROW_GROUPS_PER_FILE 1, FILENAME_PATTERN 'f{i}', OVERWRITE_OR_IGNORE);
 
 statement ok
 COPY (SELECT 42 AS val) TO '{TEST_DIR}/hive_pruning_option_mixed/plain.parquet' (FORMAT PARQUET);

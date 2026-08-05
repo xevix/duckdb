@@ -131,23 +131,15 @@ public:
 	virtual unique_ptr<NodeStatistics> GetCardinality(ClientContext &context) const;
 	virtual unique_ptr<MultiFileList> Copy() const;
 
-	//! Set the filter used to skip paths while the list is expanded - lists that expand paths lazily can use this to
-	//! avoid listing directories that can never contain a matching file. The list only observes the filter: it applies
-	//! for as long as the caller holds on to it
-	virtual void SetPathFilter(const shared_ptr<HivePathFilter> &filter) const;
+	//! Create a new list over the same paths that skips the directories rejected by the filter instead of listing
+	//! them. Returns nullptr when the list cannot prune paths - e.g. because it is not expanded lazily
+	virtual unique_ptr<MultiFileList> PathFilterPushdown(const shared_ptr<HivePathFilter> &filter) const;
 
 protected:
 	//! Whether or not the file at the index is available instantly - or if this requires additional I/O
 	virtual bool FileIsAvailable(idx_t i) const;
 	//! Get the i-th expanded file
 	virtual OpenFileInfo GetFile(idx_t i) const = 0;
-	//! Whether or not the given path can be skipped according to the path filter
-	bool PathIsPruned(const string &path) const;
-
-protected:
-	//! The path filter - only affects which paths are expanded, hence it can be set on a const file list
-	//! Held weakly so that it expires together with the pushdown that installed it
-	mutable weak_ptr<HivePathFilter> path_filter;
 
 public:
 	template <class TARGET>
@@ -218,7 +210,7 @@ public:
 	GlobMultiFileList(ClientContext &context, vector<string> globs, FileGlobInput input);
 
 	vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const override;
-	void SetPathFilter(const shared_ptr<HivePathFilter> &filter) const override;
+	unique_ptr<MultiFileList> PathFilterPushdown(const shared_ptr<HivePathFilter> &filter) const override;
 
 protected:
 	bool ExpandNextPath() const override;

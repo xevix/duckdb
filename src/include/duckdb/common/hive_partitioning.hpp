@@ -43,7 +43,7 @@ public:
 		return pruning_filters;
 	}
 
-	//! The number of paths that have been pruned so far
+	//! The number of paths that were rejected, i.e. that were seen in a directory listing but never expanded
 	idx_t GetPrunedPathCount() {
 		lock_guard<mutex> guard(lock);
 		return pruned_path_count;

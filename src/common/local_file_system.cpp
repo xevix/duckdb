@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/hive_partitioning.hpp"
 #include "duckdb/common/memory_mapped_file.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/windows.hpp"
@@ -2075,7 +2076,8 @@ static void GlobFilesInternal(FileSystem &fs, const string &path, const string &
 
 struct LocalGlobResult : public LazyMultiFileList {
 public:
-	LocalGlobResult(LocalFileSystem &fs, const string &path, FileGlobOptions options, optional_ptr<FileOpener> opener);
+	LocalGlobResult(LocalFileSystem &fs, const string &path, const FileGlobInput &input,
+	                optional_ptr<FileOpener> opener);
 
 protected:
 	bool ExpandNextPath() const override;
@@ -2084,16 +2086,18 @@ private:
 	LocalFileSystem &fs;
 	string path;
 	optional_ptr<FileOpener> opener;
+	//! Directories rejected by this filter are skipped instead of being listed
+	shared_ptr<HivePathFilter> path_filter;
 	vector<PathSplit> splits;
 	bool absolute_path = false;
 	mutable std::priority_queue<ExpandDirectory> expand_directories;
 	mutable bool finished = false;
 };
 
-LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, FileGlobOptions options_p,
+LocalGlobResult::LocalGlobResult(LocalFileSystem &fs, const string &path_p, const FileGlobInput &input,
                                  optional_ptr<FileOpener> opener)
     : LazyMultiFileList(FileOpener::TryGetClientContext(opener)), fs(fs), path(fs.ExpandPath(path_p, opener)),
-      opener(opener) {
+      opener(opener), path_filter(input.path_filter) {
 	if (path.empty()) {
 		finished = true;
 		return;
@@ -2181,7 +2185,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 	auto &current_path = next_dir.path;
 	expand_directories.pop();
 
-	if (!is_empty && PathIsPruned(current_path)) {
+	if (!is_empty && path_filter && path_filter->PrunePath(current_path)) {
 		// no file below this directory can match - skip it entirely instead of listing its contents
 		return true;
 	}
@@ -2249,7 +2253,7 @@ bool LocalGlobResult::ExpandNextPath() const {
 
 unique_ptr<MultiFileList> LocalFileSystem::GlobFilesExtended(const string &path, const FileGlobInput &input,
                                                              optional_ptr<FileOpener> opener) {
-	return make_uniq<LocalGlobResult>(*this, path, FileGlobOptions::ALLOW_EMPTY, opener);
+	return make_uniq<LocalGlobResult>(*this, path, input, opener);
 }
 
 unique_ptr<FileSystem> FileSystem::CreateLocal() {

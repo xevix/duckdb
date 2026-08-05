@@ -1,0 +1,24 @@
+# name: test/sql/copy/partitioned/hive_early_directory_pruning_empty.test
+# description: Test a hive partition filter that prunes every directory
+# group: [partitioned]
+
+# This lives apart from hive_early_directory_pruning.test because an empty file list cannot be re-bound after the
+# logical plan is serialized - that is not specific to the pruning, a filter that removes every file hits it as well
+
+require parquet
+
+statement ok
+SET hive_directory_pruning=true;
+
+statement ok
+COPY (SELECT i AS k, i AS val FROM range(0,256) tbl(i)) TO '{TEST_DIR}/hive_early_pruning_empty' (FORMAT PARQUET, PARTITION_BY (k));
+
+# a filter that prunes every directory leaves an empty file list, which must still scan as an empty result
+query I
+SELECT COUNT(*) FROM parquet_scan('{TEST_DIR}/hive_early_pruning_empty/**/*.parquet', HIVE_PARTITIONING=1) WHERE k=1000;
+----
+0
+
+query II
+SELECT k, val FROM parquet_scan('{TEST_DIR}/hive_early_pruning_empty/**/*.parquet', HIVE_PARTITIONING=1) WHERE k=1000;
+----
