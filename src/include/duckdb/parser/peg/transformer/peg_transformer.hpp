@@ -413,8 +413,6 @@ public:
 	static void RemoveOrderQualificationRecursive(unique_ptr<ParsedExpression> &root_expr);
 	static void GetValueFromExpression(unique_ptr<ParsedExpression> &expr, vector<Value> &result);
 	static bool TransformPivotInList(unique_ptr<ParsedExpression> &expr, PivotColumnEntry &entry);
-	static void AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
-	                          unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery, bool has_parameters);
 	static Value GetConstantExpressionValue(unique_ptr<ParsedExpression> &expr);
 	static void SplitGenericOptions(const vector<GenericCopyOption> &options_in,
 	                                case_insensitive_map_t<unique_ptr<ParsedExpression>> &parsed_options,

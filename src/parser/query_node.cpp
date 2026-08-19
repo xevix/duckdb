@@ -214,4 +214,13 @@ void QueryNode::AddDistinct() {
 	modifiers.push_back(make_uniq<DistinctModifier>());
 }
 
+bool IsDMLQueryNode(QueryNodeType type) {
+	return type == QueryNodeType::INSERT_QUERY_NODE || type == QueryNodeType::UPDATE_QUERY_NODE ||
+	       type == QueryNodeType::DELETE_QUERY_NODE || type == QueryNodeType::MERGE_QUERY_NODE;
+}
+
+bool IsSideEffectingQueryNode(QueryNodeType type) {
+	return IsDMLQueryNode(type) || type == QueryNodeType::COPY_QUERY_NODE;
+}
+
 } // namespace duckdb

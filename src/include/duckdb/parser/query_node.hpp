@@ -33,6 +33,11 @@ enum class QueryNodeType : uint8_t {
 	COPY_QUERY_NODE = 11
 };
 
+//! Whether the node modifies data
+bool IsDMLQueryNode(QueryNodeType type);
+//! Whether the node is executed even when it is never referenced - it must not be duplicated into another statement
+bool IsSideEffectingQueryNode(QueryNodeType type);
+
 struct CommonTableExpressionInfo;
 
 class CommonTableExpressionMap {

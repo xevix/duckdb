@@ -6,18 +6,6 @@
 
 namespace duckdb {
 
-void PEGTransformerFactory::AddPivotEntry(PEGTransformer &transformer, string enum_name, unique_ptr<SelectNode> base,
-                                          unique_ptr<ParsedExpression> column, unique_ptr<QueryNode> subquery,
-                                          bool has_parameters) {
-	auto result = make_uniq<CreatePivotEntry>();
-	result->enum_name = std::move(enum_name);
-	result->base = std::move(base);
-	result->column = std::move(column);
-	result->subquery = std::move(subquery);
-	result->has_parameters = has_parameters;
-	transformer.pivot_entries.push_back(std::move(result));
-}
-
 //! Registers the queries that materialize the pivot values of each column that has no explicit IN list
 static void AddPivotEnumEntries(PEGTransformer &transformer, vector<PivotColumn> &columns, TableRef &source,
                                 bool has_parameters) {
@@ -30,18 +18,21 @@ static void AddPivotEnumEntries(PEGTransformer &transformer, vector<PivotColumn>
 		}
 		auto enum_name = "__pivot_enum_" + UUID::ToString(UUID::GenerateRandomUUID());
 
-		unique_ptr<SelectNode> base;
+		auto entry = make_uniq<CreatePivotEntry>();
 		if (col.subquery) {
 			// the IN subquery is used as-is instead of a generated query over the source - it still has to be able
 			// to reference the CTEs that are in scope
 			transformer.ExtractCTEsRecursive(col.subquery->cte_map, true);
 		} else {
-			base = make_uniq<SelectNode>();
-			transformer.ExtractCTEsRecursive(base->cte_map);
-			base->from_table = source.Copy();
+			entry->base = make_uniq<SelectNode>();
+			transformer.ExtractCTEsRecursive(entry->base->cte_map);
+			entry->base->from_table = source.Copy();
 		}
-		PEGTransformerFactory::AddPivotEntry(transformer, enum_name, std::move(base), col.pivot_expressions[0]->Copy(),
-		                                     std::move(col.subquery), has_parameters);
+		entry->enum_name = enum_name;
+		entry->column = col.pivot_expressions[0]->Copy();
+		entry->subquery = std::move(col.subquery);
+		entry->has_parameters = has_parameters;
+		transformer.pivot_entries.push_back(std::move(entry));
 		col.pivot_enum = Identifier(enum_name);
 	}
 }
