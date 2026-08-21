@@ -677,6 +677,14 @@ void MultiFileReader::PruneReaders(MultiFileBindData &data, MultiFileList &file_
 	if (!data.initial_reader && data.union_readers.empty()) {
 		return;
 	}
+	if (data.union_readers.empty()) {
+		// only the initial reader has to be checked - ask the file list directly so that a list that is not fully
+		// expanded yet does not have to be materialized here
+		if (!file_list.ContainsFile(data.initial_reader->GetFileName())) {
+			data.initial_reader.reset();
+		}
+		return;
+	}
 
 	for (const auto &file : file_list.Files()) {
 		file_set.insert(file.path);
