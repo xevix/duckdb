@@ -219,33 +219,37 @@ HivePartitioningFilterInfo HivePartitioning::GetFilterInfo(const MultiFileOption
 	return filter_info;
 }
 
-unordered_set<idx_t> HivePartitioning::GetPathResolvedFilters(ClientContext &context, const string &path,
-                                                              const vector<unique_ptr<Expression>> &filters,
-                                                              const HivePartitioningFilterInfo &filter_info,
-                                                              TableIndex table_index) {
-	unordered_set<idx_t> result;
+vector<unique_ptr<Expression>> HivePartitioning::ExtractPathFilters(ClientContext &context, const string &path,
+                                                                    vector<unique_ptr<Expression>> &filters,
+                                                                    const HivePartitioningFilterInfo &filter_info,
+                                                                    TableIndex table_index) {
+	vector<unique_ptr<Expression>> path_filters;
 	if (!filter_info.filename_enabled && !filter_info.hive_enabled) {
-		return result;
+		return path_filters;
 	}
 	auto known_values = GetKnownColumnValues(path, filter_info);
-	for (idx_t i = 0; i < filters.size(); i++) {
-		if (EvaluateFilterOnPath(context, *filters[i], known_values, table_index) != PathFilterResult::UNKNOWN) {
-			result.insert(i);
+	vector<unique_ptr<Expression>> remaining_filters;
+	for (auto &filter : filters) {
+		if (EvaluateFilterOnPath(context, *filter, known_values, table_index) == PathFilterResult::UNKNOWN) {
+			remaining_filters.push_back(std::move(filter));
+		} else {
+			path_filters.push_back(std::move(filter));
 		}
 	}
-	return result;
+	filters = std::move(remaining_filters);
+	return path_filters;
 }
 
-optional_idx HivePartitioning::GetPruningFilter(ClientContext &context, const string &path,
-                                                const vector<unique_ptr<Expression>> &filters,
-                                                const HivePartitioningFilterInfo &filter_info, TableIndex table_index) {
+bool HivePartitioning::PathIsFiltered(ClientContext &context, const string &path,
+                                      const vector<unique_ptr<Expression>> &filters,
+                                      const HivePartitioningFilterInfo &filter_info, TableIndex table_index) {
 	auto known_values = GetKnownColumnValues(path, filter_info);
-	for (idx_t i = 0; i < filters.size(); i++) {
-		if (EvaluateFilterOnPath(context, *filters[i], known_values, table_index) == PathFilterResult::PRUNE) {
-			return optional_idx(i);
+	for (auto &filter : filters) {
+		if (EvaluateFilterOnPath(context, *filter, known_values, table_index) == PathFilterResult::PRUNE) {
+			return true;
 		}
 	}
-	return optional_idx();
+	return false;
 }
 
 // TODO: this can still be improved by removing the parts of filter expressions that are true for all remaining files.

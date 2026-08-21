@@ -10,7 +10,6 @@
 
 #include "duckdb/common/types/column/partitioned_column_data.hpp"
 #include "duckdb/common/open_file_info.hpp"
-#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/table_index.hpp"
 #include "duckdb/original/std/sstream.hpp"
 
@@ -37,19 +36,17 @@ public:
 	//! Construct the filter info describing which columns can be obtained from the path of a file
 	DUCKDB_API static HivePartitioningFilterInfo GetFilterInfo(const MultiFileOptions &options,
 	                                                           const MultiFilePushdownInfo &info);
-	//! The filters (by index) that are fully determined by the path of a file - these can be applied to the file list
-	//! itself and no longer have to be evaluated during the scan. Which columns a path provides is the same for every
-	//! file in the list, so any path in the list can be used to decide this
-	DUCKDB_API static unordered_set<idx_t> GetPathResolvedFilters(ClientContext &context, const string &path,
-	                                                              const vector<unique_ptr<Expression>> &filters,
-	                                                              const HivePartitioningFilterInfo &filter_info,
-	                                                              TableIndex table_index);
-	//! The first filter (by index) that evaluates to false using only the values the path provides - an invalid index
-	//! is returned when no filter prunes the path
-	DUCKDB_API static optional_idx GetPruningFilter(ClientContext &context, const string &path,
-	                                                const vector<unique_ptr<Expression>> &filters,
-	                                                const HivePartitioningFilterInfo &filter_info,
-	                                                TableIndex table_index);
+	//! Moves the filters that are fully determined by the path of a file out of "filters" and returns them - these can
+	//! be applied to the file list itself and no longer have to be evaluated during the scan. Which columns a path
+	//! provides is the same for every file in the list, so any path in the list can be used to decide this
+	DUCKDB_API static vector<unique_ptr<Expression>> ExtractPathFilters(ClientContext &context, const string &path,
+	                                                                    vector<unique_ptr<Expression>> &filters,
+	                                                                    const HivePartitioningFilterInfo &filter_info,
+	                                                                    TableIndex table_index);
+	//! Whether or not any of the filters evaluates to false using only the values the path provides
+	DUCKDB_API static bool PathIsFiltered(ClientContext &context, const string &path,
+	                                      const vector<unique_ptr<Expression>> &filters,
+	                                      const HivePartitioningFilterInfo &filter_info, TableIndex table_index);
 	//! Prunes a list of filenames based on a set of filters, can be used by TableFunctions in the
 	//! pushdown_complex_filter function to skip files with filename-based filters. Also removes the filters that always
 	//! evaluate to true.

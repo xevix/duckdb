@@ -141,72 +141,44 @@ bool MultiFileList::Scan(MultiFileListScanData &iterator, OpenFileInfo &result_f
 unique_ptr<MultiFileList> MultiFileList::PushdownFilters(ClientContext &context, const MultiFileOptions &options,
                                                          MultiFilePushdownInfo &info,
                                                          vector<unique_ptr<Expression>> &filters) const {
-	if (filters.empty()) {
+	if ((!options.hive_partitioning && !options.filename) || filters.empty()) {
 		return nullptr;
+	}
+	auto filter_info = HivePartitioning::GetFilterInfo(options, info);
+	if (GetFileCount().type == FileExpansionType::ALL_FILES_EXPANDED) {
+		// the list is already fully expanded - filtering it here costs no I/O, and reports the exact file counts
+		auto files = GetAllFiles();
+		auto file_count = files.size();
+		HivePartitioning::ApplyFiltersToFileList(context, files, filters, filter_info, info);
+		if (files.size() == file_count) {
+			// no file was filtered out - keep the list we have
+			return nullptr;
+		}
+		return make_uniq<SimpleMultiFileList>(std::move(files));
 	}
 	auto first_file = GetFirstFile();
 	if (first_file.path.empty()) {
 		// there are no files - there is nothing to filter
 		return nullptr;
 	}
-	auto filter_info = HivePartitioning::GetFilterInfo(options, info);
-	// which filters the path of a file resolves is the same for every file in the list - decide it once
-	auto resolved_filters =
-	    HivePartitioning::GetPathResolvedFilters(context, first_file.path, filters, filter_info, info.table_index);
-	if (resolved_filters.empty()) {
+	// which filters the path of a file resolves is the same for every file in the list - decide it once, so that only
+	// those filters are evaluated while the list is expanded
+	auto path_filters =
+	    HivePartitioning::ExtractPathFilters(context, first_file.path, filters, filter_info, info.table_index);
+	if (path_filters.empty()) {
 		// none of the filters can be evaluated using the path of a file
 		return nullptr;
 	}
-	// remember how the filters print - the resolved ones are removed from the plan below
-	vector<string> filter_strings;
-	for (auto &filter : filters) {
-		filter_strings.push_back(filter->ToString());
+	for (auto &path_filter : path_filters) {
+		info.extra_info.file_filters += path_filter->ToString();
 	}
-	auto result = make_uniq<FilteredMultiFileList>(context, shared_from_this(), std::move(filter_info), filters,
-	                                               info.table_index);
-
-	// the resolved filters are always true for the files that remain - they no longer have to be evaluated
-	vector<unique_ptr<Expression>> remaining_filters;
-	for (idx_t i = 0; i < filters.size(); i++) {
-		if (resolved_filters.find(i) == resolved_filters.end()) {
-			remaining_filters.push_back(std::move(filters[i]));
-		}
-	}
-	filters = std::move(remaining_filters);
-
-	if (GetFileCount().type != FileExpansionType::ALL_FILES_EXPANDED) {
-		// the list is not expanded yet - filter it lazily, the files are filtered as they are pulled out of it
-		for (idx_t i = 0; i < filter_strings.size(); i++) {
-			if (resolved_filters.find(i) != resolved_filters.end()) {
-				info.extra_info.file_filters += filter_strings[i];
-			}
-		}
-		return std::move(result);
-	}
-	// the list is already fully expanded - filtering it here costs no I/O, and tells us exactly how many files remain
-	auto filtered_files = result->GetAllFiles();
-	auto pruning_filters = result->GetPruningFilters();
-	for (idx_t i = 0; i < filter_strings.size(); i++) {
-		if (pruning_filters.find(i) != pruning_filters.end()) {
-			info.extra_info.file_filters += filter_strings[i];
-		}
-	}
-	auto total_files = GetTotalFileCount();
-	info.extra_info.total_files = total_files;
-	info.extra_info.filtered_files = filtered_files.size();
-	if (filtered_files.size() == total_files) {
-		// no file was filtered out - keep the list we have
-		return nullptr;
-	}
-	return make_uniq<SimpleMultiFileList>(std::move(filtered_files));
+	return make_uniq<FilteredMultiFileList>(context, shared_from_this(), std::move(filter_info),
+	                                        std::move(path_filters), info.table_index);
 }
 
 unique_ptr<MultiFileList> MultiFileList::ComplexFilterPushdown(ClientContext &context, const MultiFileOptions &options,
                                                                MultiFilePushdownInfo &info,
                                                                vector<unique_ptr<Expression>> &filters) const {
-	if (!options.hive_partitioning && !options.filename) {
-		return nullptr;
-	}
 	return PushdownFilters(context, options, info, filters);
 }
 
@@ -218,10 +190,6 @@ MultiFileList::DynamicFilterPushdown(MultiFileDynamicPushdownInfo &dynamic_pushd
 	auto &column_indexes = dynamic_pushdown_info.column_indexes;
 	auto &context = dynamic_pushdown_info.context;
 	auto &filters = dynamic_pushdown_info.filters;
-
-	if (!options.hive_partitioning && !options.filename) {
-		return nullptr;
-	}
 
 	TableIndex table_index(0);
 	ExtraOperatorInfo extra_info;
@@ -439,22 +407,15 @@ bool GlobMultiFileList::ExpandNextPath() const {
 //===--------------------------------------------------------------------===//
 // FilteredMultiFileList
 //===--------------------------------------------------------------------===//
-FilteredMultiFileList::FilteredMultiFileList(ClientContext &context_p, shared_ptr<const MultiFileList> source_p,
+FilteredMultiFileList::FilteredMultiFileList(ClientContext &context, shared_ptr<const MultiFileList> source_p,
                                              HivePartitioningFilterInfo filter_info_p,
-                                             const vector<unique_ptr<Expression>> &filters_p, TableIndex table_index_p)
-    : LazyMultiFileList(&context_p), context(context_p), source(std::move(source_p)),
-      filter_info(std::move(filter_info_p)), table_index(table_index_p) {
-	for (auto &filter : filters_p) {
-		filters.push_back(filter->Copy());
-	}
+                                             vector<unique_ptr<Expression>> filters_p, TableIndex table_index_p)
+    : LazyMultiFileList(&context), source(std::move(source_p)), filter_info(std::move(filter_info_p)),
+      filters(std::move(filters_p)), table_index(table_index_p) {
 	source->InitializeScan(source_scan);
 }
 
 FilteredMultiFileList::~FilteredMultiFileList() {
-}
-
-bool FilteredMultiFileList::PathIsFiltered(const string &path) const {
-	return HivePartitioning::GetPruningFilter(context, path, filters, filter_info, table_index).IsValid();
 }
 
 bool FilteredMultiFileList::ExpandNextPath() const {
@@ -462,23 +423,32 @@ bool FilteredMultiFileList::ExpandNextPath() const {
 	if (!source->Scan(source_scan, file)) {
 		return false;
 	}
-	auto pruning_filter = HivePartitioning::GetPruningFilter(context, file.path, filters, filter_info, table_index);
-	if (pruning_filter.IsValid()) {
+	source_file_count++;
+	if (HivePartitioning::PathIsFiltered(*context.get_mutable(), file.path, filters, filter_info, table_index)) {
 		// the file is filtered out - move on to the next one
-		pruning_filters.insert(pruning_filter.GetIndex());
 		return true;
 	}
 	expanded_files.push_back(std::move(file));
 	return true;
 }
 
-unordered_set<idx_t> FilteredMultiFileList::GetPruningFilters() const {
+MultiFileCount FilteredMultiFileList::GetFileCount(idx_t min_exact_count) const {
 	lock_guard<mutex> lck(lock);
-	return pruning_filters;
+	// expand until we have pulled "min_exact_count" files out of the source - counting the files that remain instead
+	// would expand the entire source list whenever the filters are selective
+	while (!all_files_expanded && source_file_count < min_exact_count && ExpandNextPathInternal()) {
+	}
+	auto type = all_files_expanded ? FileExpansionType::ALL_FILES_EXPANDED : FileExpansionType::NOT_ALL_FILES_KNOWN;
+	return MultiFileCount(expanded_files.size(), type);
+}
+
+vector<OpenFileInfo> FilteredMultiFileList::GetDisplayFileList(optional_idx max_files) const {
+	// which files remain is not known until the list is expanded - display whatever the source displays
+	return source->GetDisplayFileList(max_files);
 }
 
 bool FilteredMultiFileList::ContainsFile(const string &path) const {
-	if (PathIsFiltered(path)) {
+	if (HivePartitioning::PathIsFiltered(*context.get_mutable(), path, filters, filter_info, table_index)) {
 		// the file is filtered out - the source list does not have to be expanded to know this
 		return false;
 	}

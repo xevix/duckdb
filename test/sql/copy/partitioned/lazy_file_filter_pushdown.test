@@ -4,9 +4,6 @@
 
 require parquet
 
-statement ok
-SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
-
 # a file list that is not hive partitioned is not expanded during binding - filtering on the filename must not
 # expand it during pushdown either
 

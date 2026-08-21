@@ -190,8 +190,7 @@ protected:
 
 	//! Grabs the next path and expands it into Expanded paths: returns false if no more files to expand
 	virtual bool ExpandNextPath() const = 0;
-
-private:
+	//! Expands the next path and records when the list is exhausted - the lock must be held
 	bool ExpandNextPathInternal() const;
 
 protected:
@@ -234,35 +233,30 @@ protected:
 class FilteredMultiFileList : public LazyMultiFileList {
 public:
 	FilteredMultiFileList(ClientContext &context, shared_ptr<const MultiFileList> source,
-	                      HivePartitioningFilterInfo filter_info, const vector<unique_ptr<Expression>> &filters,
+	                      HivePartitioningFilterInfo filter_info, vector<unique_ptr<Expression>> filters,
 	                      TableIndex table_index);
 	~FilteredMultiFileList() override;
 
+	MultiFileCount GetFileCount(idx_t min_exact_count = 0) const override;
+	vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const override;
 	bool ContainsFile(const string &path) const override;
-
-	//! The filters (by index) that have filtered out at least one file so far
-	unordered_set<idx_t> GetPruningFilters() const;
 
 protected:
 	bool ExpandNextPath() const override;
 
 private:
-	//! Whether or not any of the filters evaluates to false for the given path
-	bool PathIsFiltered(const string &path) const;
-
-private:
-	ClientContext &context;
 	//! The list that is being filtered - kept alive because files are pulled out of it lazily
 	shared_ptr<const MultiFileList> source;
 	//! Describes which columns can be obtained from the path of a file
 	HivePartitioningFilterInfo filter_info;
-	//! Copies of the filters - the filters of the pushdown are modified while we are filtering
+	//! The filters that the path of a file resolves - filters that must still be evaluated during the scan are not
+	//! part of this list
 	vector<unique_ptr<Expression>> filters;
 	TableIndex table_index;
 	//! Scan over the source list - protected by the lock of the base class
 	mutable MultiFileListScanData source_scan;
-	//! The filters that have filtered out a file - protected by the lock of the base class
-	mutable unordered_set<idx_t> pruning_filters;
+	//! How many files have been pulled out of the source - protected by the lock of the base class
+	mutable idx_t source_file_count = 0;
 };
 
 } // namespace duckdb
