@@ -182,9 +182,12 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		if (sample_size < 1 && sample_size != -1) {
 			throw BinderException("Unsupported parameter for HIVE_SAMPLE_SIZE: cannot be smaller than 1");
 		}
-		// -1 explicitly requests that all files are inspected, overriding the hive_sample_size setting
-		options.hive_sample_size =
-		    sample_size == -1 ? MultiFileOptions::HIVE_SAMPLE_ALL_FILES : NumericCast<idx_t>(sample_size);
+		if (sample_size == -1) {
+			// -1 inspects all files, overriding the hive_sample_size setting
+			options.hive_sample_size.SetInvalid();
+		} else {
+			options.hive_sample_size = NumericCast<idx_t>(sample_size);
+		}
 	} else if (key == "hive_types" || key == "hive_type") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -761,17 +764,15 @@ void UnionByName::CombineUnionTypes(const vector<string> &col_names, const vecto
 	}
 }
 
-idx_t MultiFileOptions::GetHiveSampleSize(optional_idx sample_size) {
-	return sample_size.IsValid() ? sample_size.GetIndex() : HIVE_SAMPLE_ALL_FILES;
+MultiFileOptions::MultiFileOptions(ClientContext &context) {
+	auto sample_size = Settings::Get<HiveSampleSizeSetting>(context);
+	if (sample_size != -1) {
+		hive_sample_size = NumericCast<idx_t>(sample_size);
+	}
 }
 
-void MultiFileOptions::ResolveHiveSampleSize(ClientContext &context) {
-	if (hive_sample_size.IsValid()) {
-		// explicitly provided as a parameter - this takes precedence over the setting
-		return;
-	}
-	auto sample_size = Settings::Get<HiveSampleSizeSetting>(context);
-	hive_sample_size = sample_size == -1 ? HIVE_SAMPLE_ALL_FILES : NumericCast<idx_t>(sample_size);
+idx_t MultiFileOptions::GetHiveSampleSize(optional_idx sample_size) {
+	return sample_size.IsValid() ? sample_size.GetIndex() : NumericLimits<idx_t>::Maximum();
 }
 
 bool MultiFileOptions::AutoDetectHivePartitioningInternal(MultiFileList &files, ClientContext &context,

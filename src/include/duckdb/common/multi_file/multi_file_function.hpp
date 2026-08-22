@@ -112,7 +112,6 @@ public:
 		result->file_list = std::move(multi_file_list_p);
 		// auto-detect hive partitioning
 		result->file_options = std::move(file_options_p);
-		result->file_options.ResolveHiveSampleSize(context);
 		result->bind_data = interface.InitializeBindData(*result, std::move(options_p));
 		result->interface = std::move(interface_p);
 
@@ -206,7 +205,7 @@ public:
 
 		auto glob_input = multi_file_reader->GetGlobInput(*interface);
 
-		MultiFileOptions file_options;
+		MultiFileOptions file_options(context);
 		for (auto &kv : input.named_parameters) {
 			if (kv.first == "allow_empty") {
 				multi_file_reader->ParseOption(kv.first, kv.second, file_options, context);
@@ -247,7 +246,7 @@ public:
 		interface->InitializeInterface(context, *multi_file_reader, *file_list);
 
 		auto options = interface->InitializeOptions(context, nullptr);
-		MultiFileOptions file_options;
+		MultiFileOptions file_options(context);
 		file_options.auto_detect_hive_partitioning = false;
 
 		for (auto &[option_name, option_values] : input.info.options) {

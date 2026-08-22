@@ -9,7 +9,6 @@
 #pragma once
 
 #include "duckdb/common/case_insensitive_map.hpp"
-#include "duckdb/common/limits.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/hive_partitioning.hpp"
@@ -21,6 +20,10 @@ class MultiFileList;
 enum class MultiFileColumnMappingMode : uint8_t { BY_NAME, BY_FIELD_ID };
 
 struct MultiFileOptions {
+	MultiFileOptions() = default;
+	//! Initializes the options that have a corresponding setting
+	DUCKDB_API explicit MultiFileOptions(ClientContext &context);
+
 	bool filename = false;
 	bool hive_partitioning = false;
 	bool auto_detect_hive_partitioning = true;
@@ -30,10 +33,8 @@ struct MultiFileOptions {
 	MultiFileColumnMappingMode mapping = MultiFileColumnMappingMode::BY_NAME;
 
 	case_insensitive_map_t<LogicalType> hive_types_schema;
-	//! hive_sample_size value that inspects all files - the largest value optional_idx can hold
-	static constexpr idx_t HIVE_SAMPLE_ALL_FILES = NumericLimits<idx_t>::Maximum() - 1;
 	//! The maximum number of files inspected during binding to detect and verify the hive partitioning scheme
-	//! if not set, the hive_sample_size setting is used
+	//! if not set, all files are inspected
 	optional_idx hive_sample_size;
 
 	// Default/configurable name of the column containing the file names
@@ -51,8 +52,6 @@ struct MultiFileOptions {
 	DUCKDB_API void AutoDetectHiveTypesInternal(MultiFileList &files, ClientContext &context);
 	//! The number of files to inspect during binding - based on hive_sample_size
 	DUCKDB_API static idx_t GetHiveSampleSize(optional_idx sample_size);
-	//! Set hive_sample_size from the hive_sample_size setting if it was not explicitly provided
-	DUCKDB_API void ResolveHiveSampleSize(ClientContext &context);
 	DUCKDB_API void VerifyHiveTypesArePartitions(const std::map<string, string> &partitions) const;
 	DUCKDB_API LogicalType GetHiveLogicalType(const string &hive_partition_column) const;
 	DUCKDB_API Value GetHivePartitionValue(const string &base, const string &entry, ClientContext &context) const;
