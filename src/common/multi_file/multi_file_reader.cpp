@@ -8,6 +8,7 @@
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -181,12 +182,9 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 		if (sample_size < 1 && sample_size != -1) {
 			throw BinderException("Unsupported parameter for HIVE_SAMPLE_SIZE: cannot be smaller than 1");
 		}
-		if (sample_size == -1) {
-			// -1 means all files are inspected
-			options.hive_sample_size.SetInvalid();
-		} else {
-			options.hive_sample_size = NumericCast<idx_t>(sample_size);
-		}
+		// -1 explicitly requests that all files are inspected, overriding the hive_sample_size setting
+		options.hive_sample_size =
+		    sample_size == -1 ? MultiFileOptions::HIVE_SAMPLE_ALL_FILES : NumericCast<idx_t>(sample_size);
 	} else if (key == "hive_types" || key == "hive_type") {
 		if (val.IsNull()) {
 			throw InvalidInputException("Cannot use NULL as argument for %s", key);
@@ -764,7 +762,16 @@ void UnionByName::CombineUnionTypes(const vector<string> &col_names, const vecto
 }
 
 idx_t MultiFileOptions::GetHiveSampleSize(optional_idx sample_size) {
-	return sample_size.IsValid() ? sample_size.GetIndex() : NumericLimits<idx_t>::Maximum();
+	return sample_size.IsValid() ? sample_size.GetIndex() : HIVE_SAMPLE_ALL_FILES;
+}
+
+void MultiFileOptions::ResolveHiveSampleSize(ClientContext &context) {
+	if (hive_sample_size.IsValid()) {
+		// explicitly provided as a parameter - this takes precedence over the setting
+		return;
+	}
+	auto sample_size = Settings::Get<HiveSampleSizeSetting>(context);
+	hive_sample_size = sample_size == -1 ? HIVE_SAMPLE_ALL_FILES : NumericCast<idx_t>(sample_size);
 }
 
 bool MultiFileOptions::AutoDetectHivePartitioningInternal(MultiFileList &files, ClientContext &context,

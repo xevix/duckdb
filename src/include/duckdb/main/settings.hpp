@@ -1293,6 +1293,18 @@ struct GeometryMinimumShreddingSize {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct HiveSampleSizeSetting {
+	using RETURN_TYPE = int64_t;
+	static constexpr const char *Name = "hive_sample_size";
+	static constexpr const char *Description = "The maximum number of files inspected during binding to detect the "
+	                                           "hive partitioning scheme and the hive partition types (-1 = all files)";
+	static constexpr const char *InputType = "BIGINT";
+	static constexpr const char *DefaultValue = "-1";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+	static void OnSet(SettingCallbackInfo &info, Value &input);
+};
+
 struct HomeDirectorySetting {
 	using RETURN_TYPE = string;
 	static constexpr const char *Name = "home_directory";

@@ -48,6 +48,56 @@ SELECT i, part, typeof(part) FROM read_csv('{TEST_DIR}/hive_sample_types/**/*.cs
 43	2013-01-01	VARCHAR
 44	not_a_date	VARCHAR
 
+# the hive_sample_size setting provides the default
+statement ok
+SET hive_sample_size=1
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/hive_sample_types/**/*.csv', hive_partitioning=true)) WHERE column_name='part'
+----
+DATE
+
+# the parameter overrides the setting - in both directions
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/hive_sample_types/**/*.csv', hive_partitioning=true, hive_sample_size=-1)) WHERE column_name='part'
+----
+VARCHAR
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/hive_sample_types/**/*.csv', hive_partitioning=true, hive_sample_size=100)) WHERE column_name='part'
+----
+VARCHAR
+
+statement ok
+RESET hive_sample_size
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/hive_sample_types/**/*.csv', hive_partitioning=true)) WHERE column_name='part'
+----
+VARCHAR
+
+# the setting can also be set globally
+statement ok
+SET GLOBAL hive_sample_size=2
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/hive_sample_types/**/*.csv', hive_partitioning=true)) WHERE column_name='part'
+----
+DATE
+
+statement ok
+RESET GLOBAL hive_sample_size
+
+statement error
+SET hive_sample_size=0
+----
+<REGEX>:Invalid Input Error:.*hive_sample_size.*
+
+statement error
+SET GLOBAL hive_sample_size=-2
+----
+<REGEX>:Invalid Input Error:.*hive_sample_size.*
+
 # a file with a different partition key that sorts after the other partitions
 statement ok
 COPY (SELECT 1 AS i, 'a' AS part UNION ALL SELECT 2, 'b') TO '{TEST_DIR}/hive_sample_detect' (FORMAT CSV, PARTITION_BY ('part'));
