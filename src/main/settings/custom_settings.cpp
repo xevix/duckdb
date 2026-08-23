@@ -972,17 +972,6 @@ void ForceCompressionSetting::OnSet(SettingCallbackInfo &info, Value &input) {
 }
 
 //===----------------------------------------------------------------------===//
-// Hive Sample Size
-//===----------------------------------------------------------------------===//
-void HiveSampleSizeSetting::OnSet(SettingCallbackInfo &info, Value &input) {
-	auto sample_size = input.GetValue<int64_t>();
-	if (sample_size < 1 && sample_size != -1) {
-		throw InvalidInputException("Invalid option for %s: value must be at least 1, or -1 to inspect all files",
-		                            string(Name));
-	}
-}
-
-//===----------------------------------------------------------------------===//
 // Home Directory
 //===----------------------------------------------------------------------===//
 void HomeDirectorySetting::OnSet(SettingCallbackInfo &info, Value &input) {

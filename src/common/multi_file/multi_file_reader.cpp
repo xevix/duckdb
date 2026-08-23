@@ -8,7 +8,6 @@
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/main/settings.hpp"
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -183,7 +182,7 @@ bool MultiFileReader::ParseOption(const Identifier &key, const Value &val, Multi
 			throw BinderException("Unsupported parameter for HIVE_SAMPLE_SIZE: cannot be smaller than 1");
 		}
 		if (sample_size == -1) {
-			// -1 inspects all files, overriding the hive_sample_size setting
+			// -1 means all files are inspected
 			options.hive_sample_size.SetInvalid();
 		} else {
 			options.hive_sample_size = NumericCast<idx_t>(sample_size);
@@ -761,13 +760,6 @@ void UnionByName::CombineUnionTypes(const vector<string> &col_names, const vecto
 			union_col_names.emplace_back(col_name);
 			union_col_types.emplace_back(sql_types[col]);
 		}
-	}
-}
-
-MultiFileOptions::MultiFileOptions(ClientContext &context) {
-	auto sample_size = Settings::Get<HiveSampleSizeSetting>(context);
-	if (sample_size != -1) {
-		hive_sample_size = NumericCast<idx_t>(sample_size);
 	}
 }
 

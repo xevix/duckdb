@@ -865,16 +865,6 @@
         "struct": "GeometryMinimumShreddingSize"
     },
     {
-        "name": "hive_sample_size",
-        "description": "The maximum number of files inspected during binding to detect the hive partitioning scheme and the hive partition types (-1 = all files)",
-        "type": "BIGINT",
-        "default_scope": "local",
-        "default_value": "-1",
-        "on_callbacks": [
-            "set"
-        ]
-    },
-    {
         "name": "home_directory",
         "description": "Sets the home directory used by the system",
         "type": "VARCHAR",

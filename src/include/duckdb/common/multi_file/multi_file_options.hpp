@@ -20,10 +20,6 @@ class MultiFileList;
 enum class MultiFileColumnMappingMode : uint8_t { BY_NAME, BY_FIELD_ID };
 
 struct MultiFileOptions {
-	MultiFileOptions() = default;
-	//! Initializes the options that have a corresponding setting
-	DUCKDB_API explicit MultiFileOptions(ClientContext &context);
-
 	bool filename = false;
 	bool hive_partitioning = false;
 	bool auto_detect_hive_partitioning = true;

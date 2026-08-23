@@ -205,7 +205,7 @@ public:
 
 		auto glob_input = multi_file_reader->GetGlobInput(*interface);
 
-		MultiFileOptions file_options(context);
+		MultiFileOptions file_options;
 		for (auto &kv : input.named_parameters) {
 			if (kv.first == "allow_empty") {
 				multi_file_reader->ParseOption(kv.first, kv.second, file_options, context);
@@ -246,7 +246,7 @@ public:
 		interface->InitializeInterface(context, *multi_file_reader, *file_list);
 
 		auto options = interface->InitializeOptions(context, nullptr);
-		MultiFileOptions file_options(context);
+		MultiFileOptions file_options;
 		file_options.auto_detect_hive_partitioning = false;
 
 		for (auto &[option_name, option_values] : input.info.options) {
