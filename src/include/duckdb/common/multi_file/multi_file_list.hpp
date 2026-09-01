@@ -86,7 +86,8 @@ struct MultiFilePushdownInfo {
 
 //! Abstract class for lazily generated list of file paths/globs
 //! NOTE: subclasses are responsible for ensuring thread-safety
-class MultiFileList {
+//! NOTE: a MultiFileList must be owned by a shared_ptr - filter pushdown hands out a reference to the list it filters
+class MultiFileList : public enable_shared_from_this<MultiFileList> {
 public:
 	MultiFileList();
 	virtual ~MultiFileList();
@@ -119,6 +120,9 @@ public:
 	//! This allows us to get a rough idea of the file count
 	virtual MultiFileCount GetFileCount(idx_t min_exact_count = 0) const;
 	virtual vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const;
+	//! Whether or not the file is part of this list - the default implementation scans the list until the file is
+	//! found, lists that can answer this without expanding should override it
+	virtual bool ContainsFile(const string &path) const;
 
 	virtual unique_ptr<NodeStatistics> GetCardinality(ClientContext &context) const;
 	virtual unique_ptr<MultiFileList> Copy() const;
@@ -128,6 +132,13 @@ protected:
 	virtual bool FileIsAvailable(idx_t i) const;
 	//! Get the i-th expanded file
 	virtual OpenFileInfo GetFile(idx_t i) const = 0;
+
+private:
+	//! Push the given filters into this list - the filters are applied to the files as this list is expanded, so a
+	//! list that is not fully expanded yet does not have to be expanded here
+	unique_ptr<MultiFileList> PushdownFilters(ClientContext &context, const MultiFileOptions &options,
+	                                          MultiFilePushdownInfo &info,
+	                                          vector<unique_ptr<Expression>> &filters) const;
 
 public:
 	template <class TARGET>
@@ -179,8 +190,7 @@ protected:
 
 	//! Grabs the next path and expands it into Expanded paths: returns false if no more files to expand
 	virtual bool ExpandNextPath() const = 0;
-
-private:
+	//! Expands the next path and records when the list is exhausted - the lock must be held
 	bool ExpandNextPathInternal() const;
 
 protected:
@@ -215,6 +225,38 @@ protected:
 	mutable vector<unique_ptr<MultiFileList>> file_lists;
 	//! Current scan state
 	mutable MultiFileListScanData scan_state;
+};
+
+//! MultiFileList that applies a set of filters to the files of another list while that list is expanded. Only the
+//! hive partition keys and the filename found in the path of a file are used, so files can be filtered out without
+//! ever being opened - and without expanding the underlying list up-front
+class FilteredMultiFileList : public LazyMultiFileList {
+public:
+	FilteredMultiFileList(ClientContext &context, shared_ptr<const MultiFileList> source,
+	                      HivePartitioningFilterInfo filter_info, vector<unique_ptr<Expression>> filters,
+	                      TableIndex table_index);
+	~FilteredMultiFileList() override;
+
+	MultiFileCount GetFileCount(idx_t min_exact_count = 0) const override;
+	vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const override;
+	bool ContainsFile(const string &path) const override;
+
+protected:
+	bool ExpandNextPath() const override;
+
+private:
+	//! The list that is being filtered - kept alive because files are pulled out of it lazily
+	shared_ptr<const MultiFileList> source;
+	//! Describes which columns can be obtained from the path of a file
+	HivePartitioningFilterInfo filter_info;
+	//! The filters that the path of a file resolves - filters that must still be evaluated during the scan are not
+	//! part of this list
+	vector<unique_ptr<Expression>> filters;
+	TableIndex table_index;
+	//! Scan over the source list - protected by the lock of the base class
+	mutable MultiFileListScanData source_scan;
+	//! How many files have been pulled out of the source - protected by the lock of the base class
+	mutable idx_t source_file_count = 0;
 };
 
 } // namespace duckdb

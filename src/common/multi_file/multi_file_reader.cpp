@@ -671,23 +671,17 @@ bool MultiFileReader::CanSkipFileFromFilters(ClientContext &context, const OpenF
 }
 
 void MultiFileReader::PruneReaders(MultiFileBindData &data, MultiFileList &file_list) {
-	unordered_set<string> file_set;
-
-	// Avoid materializing the file list if there's nothing to prune
-	if (!data.initial_reader && data.union_readers.empty()) {
+	// ask the file list directly - a list that is not fully expanded yet does not have to be materialized for this
+	if (data.initial_reader && !file_list.ContainsFile(data.initial_reader->GetFileName())) {
+		data.initial_reader.reset();
+	}
+	if (data.union_readers.empty()) {
 		return;
 	}
 
+	unordered_set<string> file_set;
 	for (const auto &file : file_list.Files()) {
 		file_set.insert(file.path);
-	}
-
-	if (data.initial_reader) {
-		// check if the initial reader should still be read
-		auto entry = file_set.find(data.initial_reader->GetFileName());
-		if (entry == file_set.end()) {
-			data.initial_reader.reset();
-		}
 	}
 	for (idx_t r = 0; r < data.union_readers.size(); r++) {
 		if (!data.union_readers[r]) {
