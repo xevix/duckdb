@@ -306,12 +306,16 @@ void PEGTransformer::PivotEntryCheck(const string &type) {
 	}
 }
 
-void PEGTransformer::ExtractCTEsRecursive(CommonTableExpressionMap &cte_map) {
+void PEGTransformer::ExtractCTEsRecursive(CommonTableExpressionMap &cte_map, bool skip_side_effecting) {
 	// Traverse the stack from the most recent scope back to the global scope
 	// Use reverse iterator if you push new scopes to the back
 	for (auto it = stored_cte_map.rbegin(); it != stored_cte_map.rend(); ++it) {
 		auto &current_scope = it->get();
 		for (auto &entry : current_scope.map) {
+			if (skip_side_effecting && IsSideEffectingQueryNode(entry.second->query_node->type)) {
+				// a data-modifying CTE runs even when it is not referenced - copying it would run it twice
+				continue;
+			}
 			// Check if this CTE name is already in our result map
 			if (cte_map.map.find(entry.first) == cte_map.map.end()) {
 				cte_map.map[entry.first] = entry.second->Copy();

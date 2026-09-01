@@ -23,15 +23,6 @@ struct BoundCTEData {
 	shared_ptr<CTEBindState> cte_bind_state;
 };
 
-static bool IsDMLQueryNode(QueryNodeType t) {
-	return t == QueryNodeType::INSERT_QUERY_NODE || t == QueryNodeType::UPDATE_QUERY_NODE ||
-	       t == QueryNodeType::DELETE_QUERY_NODE || t == QueryNodeType::MERGE_QUERY_NODE;
-}
-
-static bool IsSideEffectingQueryNode(QueryNodeType type) {
-	return IsDMLQueryNode(type) || type == QueryNodeType::COPY_QUERY_NODE;
-}
-
 BoundStatement Binder::BindNode(QueryNode &node) {
 	reference<Binder> current_binder(*this);
 	vector<BoundCTEData> bound_ctes;

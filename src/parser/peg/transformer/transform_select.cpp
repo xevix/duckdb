@@ -48,14 +48,25 @@ PEGTransformerFactory::TransformSelectStatement(PEGTransformer &transformer,
 	return std::move(select_statement_internal);
 }
 
+//! Keeps a CTE scope on the transformer while the statement it belongs to is being transformed. The scope holds a
+//! reference to the map, so it has to be removed again before that map goes out of scope.
+struct CTEScope {
+	CTEScope(PEGTransformer &transformer, CommonTableExpressionMap &cte_map) : transformer(transformer) {
+		transformer.stored_cte_map.push_back(cte_map);
+	}
+	~CTEScope() {
+		transformer.stored_cte_map.pop_back();
+	}
+
+	PEGTransformer &transformer;
+};
+
 unique_ptr<SelectStatement> PEGTransformerFactory::TransformSelectStatementInternalRule(PEGTransformer &transformer,
                                                                                         ParseResult &parse_result) {
 	auto &list_pr = parse_result.Cast<ListParseResult>();
 	CommonTableExpressionMap cte_map;
 	transformer.TransformOptional<CommonTableExpressionMap>(list_pr, 0, cte_map);
-	if (!cte_map.map.empty()) {
-		transformer.stored_cte_map.push_back(cte_map);
-	}
+	CTEScope cte_scope(transformer, cte_map);
 	auto select_statement = transformer.Transform<unique_ptr<SelectStatement>>(list_pr.Child<ListParseResult>(1));
 
 	if (!cte_map.map.empty()) {
@@ -118,10 +129,7 @@ unique_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeSelectStatementInternalTrampoline(PEGTransformer &transformer, TransformStack &stack,
                                                                  TransformStackFrame &frame) {
 	if (frame.manual_state == 0) {
-		auto &cte_map = frame.GetResult<CommonTableExpressionMap>(0);
-		if (!cte_map.map.empty()) {
-			transformer.stored_cte_map.push_back(cte_map);
-		}
+		transformer.stored_cte_map.push_back(frame.GetResult<CommonTableExpressionMap>(0));
 		frame.manual_state = 1;
 		PushSelectStatementInternalRemainder(stack, frame);
 		return nullptr;
@@ -129,6 +137,8 @@ PEGTransformerFactory::FinalizeSelectStatementInternalTrampoline(PEGTransformer 
 
 	CommonTableExpressionMap cte_map;
 	if (frame.child_results[0]) {
+		// the body has been transformed - remove the scope again before the result it references is taken
+		transformer.stored_cte_map.pop_back();
 		cte_map = frame.TakeResult<CommonTableExpressionMap>(0);
 	}
 	auto select_statement = frame.TakeResult<unique_ptr<SelectStatement>>(1);
