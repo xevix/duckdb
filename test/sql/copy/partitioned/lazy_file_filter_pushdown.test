@@ -1,0 +1,107 @@
+# name: test/sql/copy/partitioned/lazy_file_filter_pushdown.test
+# description: filters on hive partition keys / the filename are applied while the file list is expanded
+# group: [partitioned]
+
+require parquet
+
+# a file list that is not hive partitioned is not expanded during binding - filtering on the filename must not
+# expand it during pushdown either
+
+statement ok
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/lazy_aaa.parquet' (FORMAT PARQUET);
+
+statement ok
+COPY (SELECT 2 AS i) TO '{TEST_DIR}/lazy_bbb.parquet' (FORMAT PARQUET);
+
+statement ok
+COPY (SELECT 3 AS i) TO '{TEST_DIR}/lazy_ccc.parquet' (FORMAT PARQUET);
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename LIKE '%lazy_bbb.parquet' ORDER BY i;
+----
+2
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename NOT LIKE '%lazy_bbb.parquet' ORDER BY i;
+----
+1
+3
+
+# the filename filter is applied to the file list, and no longer has to be evaluated during the scan
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename LIKE '%lazy_bbb.parquet';
+----
+physical_plan	<REGEX>:.*File Filters.*
+
+# the list is filtered lazily, so the number of files that remain is not known while the plan is built
+query II
+EXPLAIN SELECT i FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename LIKE '%lazy_bbb.parquet';
+----
+physical_plan	<!REGEX>:.*Scanning Files.*
+
+# filters that the path cannot resolve are still evaluated during the scan
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename LIKE '%.parquet' AND i > 1 ORDER BY i;
+----
+2
+3
+
+# a filter that only prunes files gives the same result as no filter at all
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename LIKE '%.parquet';
+----
+3
+
+# no file matches
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lazy_*.parquet', filename=true)
+WHERE filename LIKE '%does_not_exist%';
+----
+0
+
+# hive partitioned lists are fully expanded while binding - the exact file counts are still reported there
+
+statement ok
+COPY (SELECT i AS id, i % 3 AS part, (i % 2)::VARCHAR AS kind FROM range(30) t(i))
+TO '{TEST_DIR}/lazy_hive' (FORMAT PARQUET, PARTITION_BY ('part', 'kind'));
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lazy_hive/**/*.parquet', hive_partitioning=true)
+WHERE part = 1 AND kind = '1';
+----
+5
+
+query II
+EXPLAIN SELECT id FROM read_parquet('{TEST_DIR}/lazy_hive/**/*.parquet', hive_partitioning=true)
+WHERE part = 1 AND kind = '1';
+----
+physical_plan	<REGEX>:.*Scanning Files: 1/6.*
+
+# filtering on a hive key and a column of the file at the same time
+query I
+SELECT id FROM read_parquet('{TEST_DIR}/lazy_hive/**/*.parquet', hive_partitioning=true)
+WHERE part = 1 AND id > 20 ORDER BY id;
+----
+22
+25
+28
+
+# combining the filename and hive partition keys
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lazy_hive/**/*.parquet', hive_partitioning=true, filename=true)
+WHERE part = 1 AND filename LIKE '%kind=1%';
+----
+5
+
+# a filter that matches every file does not remove any file from the list
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/lazy_hive/**/*.parquet', hive_partitioning=true)
+WHERE part >= 0;
+----
+30
